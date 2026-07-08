@@ -1,0 +1,57 @@
+[
+  {
+    "task": "task_01_lru_cache",
+    "run_index": 1,
+    "passed": true,
+    "ttft": 0.020260095596313477,
+    "wall_time": 0.38460493087768555,
+    "tps": 371.81010569382886,
+    "response_text": "```python\nfrom collections import OrderedDict\n\nclass LRUCache:\n    def __init__(self, capacity: int):\n        self.capacity = capacity\n        self.cache = OrderedDict()\n\n    def get(self, key: int) -> int:\n        if key not in self.cache:\n            return -1\n        self.cache.move_to_end(key)\n        return self.cache[key]\n\n    def put(self, key: int, value: int) -> None:\n        if key in self.cache:\n            self.cache.move_to_end(key)\n        self.cache[key] = value\n        if len(self.cache) > self.capacity:\n            self.cache.popitem(last=False)\n```",
+    "extracted_code": "from collections import OrderedDict\n\nclass LRUCache:\n    def __init__(self, capacity: int):\n        self.capacity = capacity\n        self.cache = OrderedDict()\n\n    def get(self, key: int) -> int:\n        if key not in self.cache:\n            return -1\n        self.cache.move_to_end(key)\n        return self.cache[key]\n\n    def put(self, key: int, value: int) -> None:\n        if key in self.cache:\n            self.cache.move_to_end(key)\n        self.cache[key] = value\n        if len(self.cache) > self.capacity:\n            self.cache.popitem(last=False)",
+    "test_output": "============================= test session starts ==============================\nplatform darwin -- Python 3.11.0, pytest-9.1.1, pluggy-1.6.0 -- /Library/Frameworks/Python.framework/Versions/3.11/bin/python3\ncachedir: .pytest_cache\nrootdir: /Users/ethan/Desktop/projects/lms-model-bench\nplugins: langsmith-0.8.16, anyio-4.14.0\ncollecting ... collected 3 items\n\nbench/task_01_lru_cache/tests.py::test_lru_cache_basic PASSED            [ 33%]\nbench/task_01_lru_cache/tests.py::test_lru_cache_update PASSED           [ 66%]\nbench/task_01_lru_cache/tests.py::test_lru_cache_capacity_one PASSED     [100%]\n\n============================== 3 passed in 0.01s ===============================\n\n"
+  },
+  {
+    "task": "task_02_merge_intervals",
+    "run_index": 1,
+    "passed": true,
+    "ttft": 0.019789934158325195,
+    "wall_time": 0.256450891494751,
+    "tps": 374.3406756765551,
+    "response_text": "```python\ndef merge(intervals: list[list[int]]) -> list[list[int]]:\n    if not intervals:\n        return []\n    intervals.sort(key=lambda x: x[0])\n    merged = [intervals[0]]\n    for current in intervals[1:]:\n        prev = merged[-1]\n        if current[0] <= prev[1]:\n            prev[1] = max(prev[1], current[1])\n        else:\n            merged.append(current)\n    return merged\n```",
+    "extracted_code": "def merge(intervals: list[list[int]]) -> list[list[int]]:\n    if not intervals:\n        return []\n    intervals.sort(key=lambda x: x[0])\n    merged = [intervals[0]]\n    for current in intervals[1:]:\n        prev = merged[-1]\n        if current[0] <= prev[1]:\n            prev[1] = max(prev[1], current[1])\n        else:\n            merged.append(current)\n    return merged",
+    "test_output": "============================= test session starts ==============================\nplatform darwin -- Python 3.11.0, pytest-9.1.1, pluggy-1.6.0 -- /Library/Frameworks/Python.framework/Versions/3.11/bin/python3\ncachedir: .pytest_cache\nrootdir: /Users/ethan/Desktop/projects/lms-model-bench\nplugins: langsmith-0.8.16, anyio-4.14.0\ncollecting ... collected 3 items\n\nbench/task_02_merge_intervals/tests.py::test_merge_intervals_basic PASSED [ 33%]\nbench/task_02_merge_intervals/tests.py::test_merge_intervals_sorted PASSED [ 66%]\nbench/task_02_merge_intervals/tests.py::test_merge_intervals_empty_and_single PASSED [100%]\n\n============================== 3 passed in 0.01s ===============================\n\n"
+  },
+  {
+    "task": "task_03_trie",
+    "run_index": 1,
+    "passed": true,
+    "ttft": 0.022763967514038086,
+    "wall_time": 0.7640950679779053,
+    "tps": 290.5397630526512,
+    "response_text": "```python\nclass TrieNode:\n    def __init__(self):\n        self.children = {}\n        self.is_word = False\n\nclass Trie:\n    def __init__(self):\n        self.root = TrieNode()\n\n    def insert(self, word: str) -> None:\n        node = self.root\n        for char in word:\n            if char not in node.children:\n                node.children[char] = TrieNode()\n            node = node.children[char]\n        node.is_word = True\n\n    def search(self, word: str) -> bool:\n        node = self.root\n        for char in word:\n            if char not in node.children:\n                return False\n            node = node.children[char]\n        return node.is_word\n\n    def startsWith(self, prefix: str) -> bool:\n        node = self.root\n        for char in prefix:\n            if char not in node.children:\n                return False\n            node = node.children[char]\n        return True\n```",
+    "extracted_code": "class TrieNode:\n    def __init__(self):\n        self.children = {}\n        self.is_word = False\n\nclass Trie:\n    def __init__(self):\n        self.root = TrieNode()\n\n    def insert(self, word: str) -> None:\n        node = self.root\n        for char in word:\n            if char not in node.children:\n                node.children[char] = TrieNode()\n            node = node.children[char]\n        node.is_word = True\n\n    def search(self, word: str) -> bool:\n        node = self.root\n        for char in word:\n            if char not in node.children:\n                return False\n            node = node.children[char]\n        return node.is_word\n\n    def startsWith(self, prefix: str) -> bool:\n        node = self.root\n        for char in prefix:\n            if char not in node.children:\n                return False\n            node = node.children[char]\n        return True",
+    "test_output": "============================= test session starts ==============================\nplatform darwin -- Python 3.11.0, pytest-9.1.1, pluggy-1.6.0 -- /Library/Frameworks/Python.framework/Versions/3.11/bin/python3\ncachedir: .pytest_cache\nrootdir: /Users/ethan/Desktop/projects/lms-model-bench\nplugins: langsmith-0.8.16, anyio-4.14.0\ncollecting ... collected 2 items\n\nbench/task_03_trie/tests.py::test_trie_basic PASSED                      [ 50%]\nbench/task_03_trie/tests.py::test_trie_empty_and_overlap PASSED          [100%]\n\n============================== 2 passed in 0.01s ===============================\n\n"
+  },
+  {
+    "task": "task_04_balanced_brackets",
+    "run_index": 1,
+    "passed": true,
+    "ttft": 0.022661924362182617,
+    "wall_time": 0.2981750965118408,
+    "tps": 288.4211357892018,
+    "response_text": "```python\ndef isValid(s: str) -> bool:\n    stack = []\n    mapping = {\")\": \"(\", \"}\": \"{\", \"]\": \"[\"}\n    for char in s:\n        if char in mapping:\n            top_element = stack.pop() if stack else '#'\n            if mapping[char] != top_element:\n                return False\n        else:\n            stack.append(char)\n    return not stack\n```",
+    "extracted_code": "def isValid(s: str) -> bool:\n    stack = []\n    mapping = {\")\": \"(\", \"}\": \"{\", \"]\": \"[\"}\n    for char in s:\n        if char in mapping:\n            top_element = stack.pop() if stack else '#'\n            if mapping[char] != top_element:\n                return False\n        else:\n            stack.append(char)\n    return not stack",
+    "test_output": "============================= test session starts ==============================\nplatform darwin -- Python 3.11.0, pytest-9.1.1, pluggy-1.6.0 -- /Library/Frameworks/Python.framework/Versions/3.11/bin/python3\ncachedir: .pytest_cache\nrootdir: /Users/ethan/Desktop/projects/lms-model-bench\nplugins: langsmith-0.8.16, anyio-4.14.0\ncollecting ... collected 2 items\n\nbench/task_04_balanced_brackets/tests.py::test_balanced_brackets_basic PASSED [ 50%]\nbench/task_04_balanced_brackets/tests.py::test_balanced_brackets_edge PASSED [100%]\n\n============================== 2 passed in 0.01s ===============================\n\n"
+  },
+  {
+    "task": "task_05_binary_search",
+    "run_index": 1,
+    "passed": true,
+    "ttft": 0.020243167877197266,
+    "wall_time": 0.6718761920928955,
+    "tps": 221.76704838411484,
+    "response_text": "```python\ndef searchRange(nums: list[int], target: int) -> list[int]:\n    def findBound(isFirst):\n        left, right = 0, len(nums) - 1\n        bound = -1\n        while left <= right:\n            mid = (left + right) // 2\n            if nums[mid] == target:\n                bound = mid\n                if isFirst:\n                    right = mid - 1\n                else:\n                    left = mid + 1\n            elif nums[mid] > target:\n                right = mid - 1\n            else:\n                left = mid + 1\n        return bound\n    return [findBound(True), findBound(False)]\n```",
+    "extracted_code": "def searchRange(nums: list[int], target: int) -> list[int]:\n    def findBound(isFirst):\n        left, right = 0, len(nums) - 1\n        bound = -1\n        while left <= right:\n            mid = (left + right) // 2\n            if nums[mid] == target:\n                bound = mid\n                if isFirst:\n                    right = mid - 1\n                else:\n                    left = mid + 1\n            elif nums[mid] > target:\n                right = mid - 1\n            else:\n                left = mid + 1\n        return bound\n    return [findBound(True), findBound(False)]",
+    "test_output": "============================= test session starts ==============================\nplatform darwin -- Python 3.11.0, pytest-9.1.1, pluggy-1.6.0 -- /Library/Frameworks/Python.framework/Versions/3.11/bin/python3\ncachedir: .pytest_cache\nrootdir: /Users/ethan/Desktop/projects/lms-model-bench\nplugins: langsmith-0.8.16, anyio-4.14.0\ncollecting ... collected 3 items\n\nbench/task_05_binary_search/tests.py::test_binary_search_basic PASSED    [ 33%]\nbench/task_05_binary_search/tests.py::test_binary_search_single PASSED   [ 66%]\nbench/task_05_binary_search/tests.py::test_binary_search_all_same PASSED [100%]\n\n============================== 3 passed in 0.01s ===============================\n\n"
+  }
+]
