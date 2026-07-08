@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 
 import pytest
 
@@ -74,3 +75,47 @@ def test_explicit_data_dir_is_supported():
     assert sql_summary["completed"] == 2
     assert sql_summary["completion_rate"] == 0.667
     assert sql_summary["average_score"] == 83.5
+
+
+def test_course_summary_edge_cases_from_temp_fixtures(tmp_path):
+    from solution import LearningAnalytics
+
+    courses = [
+        {
+            "id": "packed",
+            "title": "Packed Course",
+            "capacity": 1,
+            "tags": [],
+        },
+        {
+            "id": "empty",
+            "title": "No Enrollment Course",
+            "capacity": 5,
+            "tags": [],
+        },
+    ]
+    (tmp_path / "courses.json").write_text(json.dumps(courses), encoding="utf-8")
+    (tmp_path / "enrollments.csv").write_text(
+        "\n".join([
+            "learner_id,course_id,status,score,minutes",
+            "u1,packed,in_progress,73,40",
+            "u2,packed,dropped,0,12",
+        ]),
+        encoding="utf-8",
+    )
+
+    analytics = LearningAnalytics(data_dir=str(tmp_path))
+
+    packed = analytics.course_summary("packed")
+    assert packed["enrolled"] == 2
+    assert packed["completed"] == 0
+    assert packed["completion_rate"] == 0.0
+    assert packed["average_score"] == 0.0
+    assert packed["is_over_capacity"] is True
+
+    empty = analytics.course_summary("empty")
+    assert empty["enrolled"] == 0
+    assert empty["completed"] == 0
+    assert empty["completion_rate"] == 0.0
+    assert empty["average_score"] == 0.0
+    assert empty["is_over_capacity"] is False

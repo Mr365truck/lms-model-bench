@@ -206,7 +206,12 @@ def run_task_tests(task_dir, extracted_code, base_dir, timeout_sec=TEST_TIMEOUT)
         clean_env = {
             "PYTHONPATH": temp_dir,
             "PATH": os.environ.get("PATH", ""),
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+            "PYTHONDONTWRITEBYTECODE": "1",
         }
+        for key in ("SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP"):
+            if key in os.environ:
+                clean_env[key] = os.environ[key]
         
         try:
             result = subprocess.run(

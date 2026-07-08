@@ -18,8 +18,8 @@ This benchmarking suite implements the workflow discussed in [ChatGPT Model Benc
   - **Speed**: Output Tokens per Second (TPS).
   - **Wall Time**: Total request round-trip time.
   - **Pass Rate**: Pytest validation of the generated code.
-- **Isolated Temp Runner**: Each generated solution is tested in a copied temporary task directory with a minimal environment containing only `PYTHONPATH` and `PATH`. This protects benchmark hygiene, but it is not a security sandbox for hostile generated code.
-- **Premium Reports**: Automatically compiles results into a beautiful HTML visual report (`benchmark_report.html`) with graphs and expandable detailed run logs.
+- **Isolated Temp Runner**: Each generated solution is tested in a copied temporary task directory with a minimal environment. The runner sets `PYTHONPATH`, `PATH`, `PYTEST_DISABLE_PLUGIN_AUTOLOAD`, and `PYTHONDONTWRITEBYTECODE`, and preserves a few Windows process keys when present. This protects benchmark hygiene, but it is not a security sandbox for hostile generated code.
+- **HTML Reports**: Automatically compiles results into `benchmark_report.html` with summary metrics, charts, per-task pass rates, and expandable run logs.
 
 ---
 
@@ -27,7 +27,7 @@ This benchmarking suite implements the workflow discussed in [ChatGPT Model Benc
 
 1. **Install Python dependencies**:
    ```bash
-   pip install requests pytest
+   pip install -r requirements.txt
    ```
 
 2. **Load your model in LM Studio**:
@@ -48,12 +48,22 @@ python3 benchmark.py --api-base http://localhost:5555 --model qwen/qwen3.6-27b -
 - `--model`: Model name / identifier matching the endpoint's model list (default: `qwen/qwen3.6-27b`).
 - `--api-type`: Protocol endpoint type (`openai`, `anthropic`, or `lm_studio`).
 - `--runs`: Number of repetitions per task (default: `1`).
+- `--warmup`: Send one warmup request before timed benchmark runs.
+- `--quant`: Quantization label to store in the report (for example `Q4_K_M`, `Q8_0`, `IQ4_NL`).
+- `--context-len`: Context window label to store in the report (for example `16k`, `32k`).
+- `--mtp`: Multi-token prediction setting label.
+- `--draft`: Draft model or draft-size label for speculative decoding.
+- `--gpu-layers`: Number of layers offloaded to GPU.
+- `--flash-attention`: Flash Attention setting label.
+- `--samplers`: Sampler settings label (for example `temp=0.1, top_p=0.9`).
+- `--seed`: Random seed label.
+- `--lms-version`: LM Studio version label.
 
 ---
 
 ## Customizing Configuration in Code
 
-At the top of [benchmark.py](file:///Users/ethan/desktop/projects/lms-model-bench/benchmark.py), you can directly change the default configuration variables:
+At the top of [`benchmark.py`](benchmark.py), you can directly change the default configuration variables:
 
 ```python
 # Easily changeable variables matching the endpoint and model identifiers
@@ -63,6 +73,7 @@ API_TYPE = "openai"              # Options: "openai", "anthropic", "lm_studio"
 TEMPERATURE = 0.1
 NUM_RUNS_PER_TASK = 1            # Run each task this many times for averaging
 TIMEOUT = 60                     # Timeout for API requests in seconds
+TEST_TIMEOUT = 10                # Timeout for unit test execution
 ```
 
 ---

@@ -303,20 +303,21 @@ class ThreadSafeTaskWorker:
     def stop(self) -> None:
         with self.state_lock:
             self.stopped = True
-        
-        while not self.task_queue.empty():
-            try:
-                task_id, _, _, _ = self.task_queue.get_nowait()
-                self.task_queue.task_done()
-            except queue.Empty:
-                break
-            with self.results_lock:
-                self.cancelled.add(task_id)
-            self._mark_task_done()
+            while not self.task_queue.empty():
+                try:
+                    task_id, _, _, _ = self.task_queue.get_nowait()
+                    self.task_queue.task_done()
+                except queue.Empty:
+                    break
+                with self.results_lock:
+                    self.cancelled.add(task_id)
+                self._mark_task_done()
 
         for t in self.threads:
             t.join()
-        self.threads = []
+
+        with self.state_lock:
+            self.threads = []
 ```""",
 
     # Task 6: File-backed LMS Analytics
