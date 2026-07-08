@@ -1,0 +1,6 @@
+{
+  "name": "REST API Integration Client",
+  "difficulty": "Medium",
+  "category": "API Integration",
+  "description": "Evaluates the model's ability to implement a client wrapper with HTTP 429 rate-limiting retries, Authorization headers, and automated pagination."
+}

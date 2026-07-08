@@ -4,7 +4,7 @@ Refactor a legacy, slow log parsing and metrics computation algorithm into an op
 The old logic processed logs (lines of JSON strings) by reading them, parsing, and for every element computing the running average and standard deviation of a metric `latency` over a sliding time-window `window_seconds`. The old implementation recalculated the statistics from scratch for every log item (an O(N^2) operation), causing timeouts on large datasets.
 
 ### Optimized Requirements:
-Implement a class `MetricsProcessor` in Python that can process logs in O(N) overall time complexity.
+Implement a class `MetricsProcessor` in Python that optimizes rolling window statistics.
 
 The class must support:
 1. `__init__(self, window_seconds: int)`: Initialize with time window size.
@@ -18,6 +18,6 @@ The class must support:
      - `std`: standard deviation of latency inside the active window (rounded to 3 decimal places). If count < 2, standard deviation should be `0.0`.
      - `anomalies`: number of items in the current window whose latency deviates from the current window's average by more than 2 standard deviations.
 
-Ensure the calculations are optimized (e.g. using running sums or variance calculations to avoid recalculating from scratch).
+Ensure the basic calculations (count, average, standard deviation) are optimized using running sums or variance updates to run in O(1) step complexity. The anomaly detection check can scan the active sliding window elements, resulting in an O(W) step complexity where W is the number of active elements in the window.
 
 Please return only the python code inside a ```python ... ``` block, starting with the class definition. No explanations.

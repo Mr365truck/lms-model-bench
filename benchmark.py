@@ -5,6 +5,8 @@ import time
 import json
 import re
 import subprocess
+import shutil
+import tempfile
 import requests
 
 # ==============================================================================
@@ -49,7 +51,6 @@ def parse_openai_stream(response):
                 break
             try:
                 chunk = json.loads(data_content)
-                # Check for usage in chunk (often in final chunk)
                 if "usage" in chunk and chunk["usage"]:
                     usage = chunk["usage"]
                 choices = chunk.get("choices", [])
@@ -102,7 +103,7 @@ def parse_lm_studio_stream(response):
     yield from parse_openai_stream(response)
 
 def query_model(api_base, api_type, model_name, prompt):
-    """Queries the model and returns (response_text, ttft, total_time, token_count)."""
+    """Queries the model and returns (response_text, ttft, total_time, token_count, is_estimated)."""
     headers = {"Content-Type": "application/json"}
     
     if api_type == "openai":
@@ -112,7 +113,7 @@ def query_model(api_base, api_type, model_name, prompt):
             "messages": [{"role": "user", "content": prompt}],
             "temperature": TEMPERATURE,
             "stream": True,
-            "stream_options": {"include_usage": True} # Ask server to include token statistics
+            "stream_options": {"include_usage": True}
         }
         stream_parser = parse_openai_stream
     elif api_type == "anthropic":
@@ -163,7 +164,6 @@ def query_model(api_base, api_type, model_name, prompt):
     if usage:
         token_count = usage.get("completion_tokens") or usage.get("output_tokens")
     
-    # Fallback to character-based heuristic if usage details missing
     is_estimated = False
     if token_count is None:
         token_count = max(1, int(len(full_text) / 4))
@@ -171,44 +171,62 @@ def query_model(api_base, api_type, model_name, prompt):
 
     return full_text, ttft, total_time, token_count, is_estimated
 
-def run_task_tests(task_dir, timeout_sec=TEST_TIMEOUT):
-    """Executes the test suite in the task folder and returns (passed, output)."""
-    init_file = os.path.join(task_dir, "__init__.py")
-    if not os.path.exists(init_file):
-        with open(init_file, "w") as f:
+def run_task_tests(task_dir, extracted_code, base_dir, timeout_sec=TEST_TIMEOUT):
+    """Executes the test suite inside an isolated temporary sandbox directory to prevent workspace leaks/damage."""
+    sandbox_base = os.path.join(base_dir, "sandbox_tmp")
+    os.makedirs(sandbox_base, exist_ok=True)
+    
+    # Create temporary directory inside workspace sandbox_base
+    with tempfile.TemporaryDirectory(dir=sandbox_base) as temp_dir:
+        # 1. Write the extracted code to solution.py
+        solution_file = os.path.join(temp_dir, "solution.py")
+        with open(solution_file, "w", encoding="utf-8") as f:
+            f.write(extracted_code)
+            
+        # 2. Copy the task's tests.py to the sandbox
+        src_tests = os.path.join(task_dir, "tests.py")
+        dst_tests = os.path.join(temp_dir, "tests.py")
+        if os.path.exists(src_tests):
+            shutil.copy(src_tests, dst_tests)
+            
+        # 3. Create empty __init__.py to facilitate imports
+        with open(os.path.join(temp_dir, "__init__.py"), "w") as f:
             pass
-
-    test_file = os.path.join(task_dir, "tests.py")
-    
-    # Execute pytest as a subprocess with a timeout to catch infinite loops
-    cmd = [sys.executable, "-m", "pytest", "-v", test_file]
-    
-    try:
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=timeout_sec
-        )
-        passed = (result.returncode == 0)
-        output = result.stdout + "\n" + result.stderr
-    except subprocess.TimeoutExpired:
-        passed = False
-        output = f"TIMEOUT: Test execution exceeded the limit of {timeout_sec} seconds (possible infinite loop or hang in generated code)."
+            
+        # 4. Prepare execution command
+        cmd = [sys.executable, "-m", "pytest", "-v", "tests.py"]
         
+        # Build clean environment with PYTHONPATH pointing to the isolated directory
+        clean_env = os.environ.copy()
+        clean_env["PYTHONPATH"] = temp_dir
+        
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=temp_dir,
+                env=clean_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=timeout_sec
+            )
+            passed = (result.returncode == 0)
+            output = result.stdout + "\n" + result.stderr
+        except subprocess.TimeoutExpired:
+            passed = False
+            output = f"TIMEOUT: Test execution exceeded the limit of {timeout_sec} seconds (possible infinite loop or hang in generated code)."
+            
     return passed, output
 
 def generate_html_report(results, config):
     """Generates a premium HTML report summary of the benchmark runs."""
-    
-    # Aggregate statistics
     total_runs = len(results)
     passed_runs = sum(1 for r in results if r["passed"])
     pass_rate = (passed_runs / total_runs * 100) if total_runs > 0 else 0
     
-    successful_speed_runs = [r for r in results if r.get("tps") is not None and r["tps"] > 0]
-    avg_tps = (sum(r["tps"] for r in successful_speed_runs) / len(successful_speed_runs)) if successful_speed_runs else 0
+    successful_speed_runs = [r for r in results if r.get("decode_tps") is not None and r["decode_tps"] > 0]
+    avg_decode_tps = (sum(r["decode_tps"] for r in successful_speed_runs) / len(successful_speed_runs)) if successful_speed_runs else 0
+    avg_e2e_tps = (sum(r["e2e_tps"] for r in successful_speed_runs) / len(successful_speed_runs)) if successful_speed_runs else 0
     avg_ttft = (sum(r["ttft"] for r in results) / total_runs) if total_runs > 0 else 0
     avg_wall_time = (sum(r["wall_time"] for r in results) / total_runs) if total_runs > 0 else 0
     
@@ -220,14 +238,17 @@ def generate_html_report(results, config):
             tasks_summary[task] = {
                 "runs": [],
                 "passed_count": 0,
-                "tps_sum": 0,
+                "decode_tps_sum": 0,
+                "e2e_tps_sum": 0,
                 "ttft_sum": 0,
                 "wall_time_sum": 0,
+                "metadata": r.get("metadata", {})
             }
         tasks_summary[task]["runs"].append(r)
         if r["passed"]:
             tasks_summary[task]["passed_count"] += 1
-        tasks_summary[task]["tps_sum"] += r["tps"]
+        tasks_summary[task]["decode_tps_sum"] += r["decode_tps"]
+        tasks_summary[task]["e2e_tps_sum"] += r["e2e_tps"]
         tasks_summary[task]["ttft_sum"] += r["ttft"]
         tasks_summary[task]["wall_time_sum"] += r["wall_time"]
 
@@ -236,38 +257,52 @@ def generate_html_report(results, config):
     for task_name, info in tasks_summary.items():
         n = len(info["runs"])
         task_pass_rate = (info["passed_count"] / n * 100)
-        task_avg_tps = info["tps_sum"] / n
+        task_avg_decode_tps = info["decode_tps_sum"] / n
+        task_avg_e2e_tps = info["e2e_tps_sum"] / n
         task_avg_ttft = info["ttft_sum"] / n
         task_avg_wall_time = info["wall_time_sum"] / n
         
+        meta = info["metadata"]
+        disp_name = meta.get("name", task_name.replace("task_", "").replace("_", " ").title())
+        category = meta.get("category", "General")
+        difficulty = meta.get("difficulty", "Medium")
+        
         task_rows.append({
-            "name": task_name,
+            "name": disp_name,
+            "category": category,
+            "difficulty": difficulty,
             "runs_count": n,
             "pass_rate": f"{task_pass_rate:.1f}%",
             "passed_count": info["passed_count"],
-            "avg_tps": f"{task_avg_tps:.1f}",
+            "avg_decode_tps": f"{task_avg_decode_tps:.1f}",
+            "avg_e2e_tps": f"{task_avg_e2e_tps:.1f}",
             "avg_ttft": f"{task_avg_ttft:.3f}s",
             "avg_wall_time": f"{task_avg_wall_time:.2f}s"
         })
 
-    # Prepare JSON dump of results for HTML charts
     results_json = json.dumps(results, indent=2)
 
-    # Pre-render rows to avoid f-string nesting syntax errors
     task_rows_html = []
     for row in task_rows:
         pass_rate_val = float(row['pass_rate'].rstrip('%'))
         badge_class = 'badge-success' if pass_rate_val > 50 else 'badge-error'
+        diff_class = 'badge-success' if row['difficulty'] == 'Easy' else ('badge-warning' if row['difficulty'] == 'Medium' else 'badge-danger')
+        
         row_html = f"""
                     <tr>
-                        <td style="font-weight: 600;">{row['name']}</td>
+                        <td>
+                            <div style="font-weight: 600;">{row['name']}</div>
+                            <div style="font-size: 0.75rem; color: var(--text-muted);">{row['category']}</div>
+                        </td>
+                        <td><span class="badge {diff_class}">{row['difficulty']}</span></td>
                         <td>{row['runs_count']}</td>
                         <td>
                             <span class="badge {badge_class}">
                                 {row['pass_rate']}
                             </span>
                         </td>
-                        <td style="font-family: 'JetBrains Mono', monospace;">{row['avg_tps']} tok/s</td>
+                        <td style="font-family: 'JetBrains Mono', monospace;">{row['avg_decode_tps']} tok/s</td>
+                        <td style="font-family: 'JetBrains Mono', monospace; color: var(--text-muted); font-size: 0.85rem;">{row['avg_e2e_tps']} tok/s</td>
                         <td style="font-family: 'JetBrains Mono', monospace;">{row['avg_ttft']}</td>
                         <td style="font-family: 'JetBrains Mono', monospace;">{row['avg_wall_time']}</td>
                     </tr>
@@ -280,7 +315,13 @@ def generate_html_report(results, config):
         badge_class = 'badge-success' if run['passed'] else 'badge-error'
         status_text = 'PASS' if run['passed'] else 'FAIL'
         test_output_class = 'test-output-pass' if run['passed'] else 'test-output-fail'
-        speed_label = f"{run['tps']:.1f} tok/s" + (" (est)" if run.get("is_estimated") else "")
+        
+        est_suffix = " (est)" if run.get("is_estimated") else ""
+        decode_speed = f"{run['decode_tps']:.1f} tok/s{est_suffix}"
+        e2e_speed = f"{run['e2e_tps']:.1f} tok/s{est_suffix}"
+        
+        meta = run.get("metadata", {})
+        disp_name = meta.get("name", run['task'].replace("task_", "").replace("_", " ").title())
         
         run_html = f"""
             <div class="run-accordion" id="run-container-{idx}">
@@ -289,11 +330,12 @@ def generate_html_report(results, config):
                         <span class="badge {badge_class}">
                             {status_text}
                         </span>
-                        <span style="font-weight: 600;">{run['task']}</span>
+                        <span style="font-weight: 600;">{disp_name}</span>
                         <span style="color: var(--text-muted); font-size: 0.85rem;">Run #{run['run_index']}</span>
                     </div>
                     <div class="run-meta-group">
-                        <span>Speed: <strong>{speed_label}</strong></span>
+                        <span>Decode Speed: <strong>{decode_speed}</strong></span>
+                        <span>E2E Speed: <strong style="color: var(--text-muted);">{e2e_speed}</strong></span>
                         <span>TTFT: <strong>{run['ttft']:.3f}s</strong></span>
                         <span>Wall Time: <strong>{run['wall_time']:.2f}s</strong></span>
                         <span id="accordion-arrow-{idx}">▼</span>
@@ -333,6 +375,8 @@ def generate_html_report(results, config):
             --bg-tertiary: #1f2d44;
             --accent: #3b82f6;
             --accent-success: #10b981;
+            --accent-warning: #fbbf24;
+            --accent-danger: #ef4444;
             --accent-error: #ef4444;
             --text-main: #f3f4f6;
             --text-muted: #9ca3af;
@@ -524,6 +568,18 @@ def generate_html_report(results, config):
             border: 1px solid rgba(16, 185, 129, 0.3);
         }}
 
+        .badge-warning {{
+            background: rgba(251, 191, 36, 0.15);
+            color: var(--accent-warning);
+            border: 1px solid rgba(251, 191, 36, 0.3);
+        }}
+
+        .badge-danger {{
+            background: rgba(239, 68, 68, 0.15);
+            color: var(--accent-danger);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+        }}
+
         .badge-error {{
             background: rgba(239, 68, 68, 0.15);
             color: var(--accent-error);
@@ -659,19 +715,19 @@ def generate_html_report(results, config):
                 <div class="metric-desc">{passed_runs} of {total_runs} runs passed</div>
             </div>
             <div class="card">
-                <div class="metric-title">Avg Generation Speed</div>
-                <div class="metric-value metric-tps">{avg_tps:.1f} <span style="font-size: 1.2rem; font-weight: 500;">tok/s</span></div>
-                <div class="metric-desc">Output token generation rate</div>
+                <div class="metric-title">Avg Decode Speed</div>
+                <div class="metric-value metric-tps">{avg_decode_tps:.1f} <span style="font-size: 1.2rem; font-weight: 500;">tok/s</span></div>
+                <div class="metric-desc">Token generation rate (excluding TTFT)</div>
             </div>
             <div class="card">
-                <div class="metric-title">Avg Latency (TTFT)</div>
-                <div class="metric-value" style="color: #fbbf24;">{avg_ttft:.3f}s</div>
-                <div class="metric-desc">Time to first token response</div>
+                <div class="metric-title">Avg E2E Throughput</div>
+                <div class="metric-value" style="color: #6366f1;">{avg_e2e_tps:.1f} <span style="font-size: 1.2rem; font-weight: 500;">tok/s</span></div>
+                <div class="metric-desc">End-to-End throughput (including TTFT)</div>
             </div>
             <div class="card">
-                <div class="metric-title">Avg Wall Time</div>
-                <div class="metric-value" style="color: #a78bfa;">{avg_wall_time:.2f}s</div>
-                <div class="metric-desc">Total request roundtrip duration</div>
+                <div class="metric-title">Avg Latency (TTFT) / Wall Time</div>
+                <div class="metric-value" style="color: #fbbf24;">{avg_ttft:.3f}s <span style="font-size: 1.2rem; font-weight: 500; color: var(--text-muted);">/ {avg_wall_time:.1f}s</span></div>
+                <div class="metric-desc">TTFT / Total Wall Time average</div>
             </div>
         </div>
 
@@ -694,9 +750,11 @@ def generate_html_report(results, config):
                 <thead>
                     <tr>
                         <th>Coding Task</th>
+                        <th>Difficulty</th>
                         <th>Runs</th>
                         <th>Pass Rate</th>
-                        <th>Avg Speed</th>
+                        <th>Avg Decode</th>
+                        <th>Avg E2E</th>
                         <th>Avg Latency</th>
                         <th>Avg Wall Time</th>
                     </tr>
@@ -732,11 +790,12 @@ def generate_html_report(results, config):
         
         const tasksSummary = {{}};
         rawResults.forEach(r => {{
-            if (!tasksSummary[r.task]) {{
-                tasksSummary[r.task] = {{ passed: 0, total: 0 }};
+            const name = r.metadata && r.metadata.name ? r.metadata.name : r.task.replace("task_", "").replace("_", " ").title();
+            if (!tasksSummary[name]) {{
+                tasksSummary[name] = {{ passed: 0, total: 0 }};
             }}
-            tasksSummary[r.task].total++;
-            if (r.passed) tasksSummary[r.task].passed++;
+            tasksSummary[name].total++;
+            if (r.passed) tasksSummary[name].passed++;
         }});
 
         const taskLabels = Object.keys(tasksSummary);
@@ -746,7 +805,7 @@ def generate_html_report(results, config):
         new Chart(ctxPass, {{
             type: 'bar',
             data: {{
-                labels: taskLabels.map(l => l.replace('task_', '')),
+                labels: taskLabels,
                 datasets: [{{
                     label: 'Pass Rate (%)',
                     data: passRates,
@@ -777,8 +836,12 @@ def generate_html_report(results, config):
             }}
         }});
 
-        const runIndices = rawResults.map((r, i) => `#${{i+1}} (${{r.task.substring(0, 10)}}...)`);
-        const tpsValues = rawResults.map(r => r.tps);
+        const runIndices = rawResults.map((r, i) => {{
+            const name = r.metadata && r.metadata.name ? r.metadata.name : r.task.replace("task_", "").replace("_", " ");
+            return `#${{i+1}} (${{name.substring(0, 10)}}...)`;
+        }});
+        const decodeTpsValues = rawResults.map(r => r.decode_tps);
+        const e2eTpsValues = rawResults.map(r => r.e2e_tps);
         const ttftValues = rawResults.map(r => r.ttft);
 
         const ctxMetrics = document.getElementById('metricsChart').getContext('2d');
@@ -788,10 +851,19 @@ def generate_html_report(results, config):
                 labels: runIndices,
                 datasets: [
                     {{
-                        label: 'Speed (tok/s)',
-                        data: tpsValues,
+                        label: 'Decode Speed (tok/s)',
+                        data: decodeTpsValues,
                         borderColor: '#3b82f6',
                         backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                        borderWidth: 2,
+                        tension: 0.3,
+                        yAxisID: 'y'
+                    }},
+                    {{
+                        label: 'E2E Throughput (tok/s)',
+                        data: e2eTpsValues,
+                        borderColor: '#6366f1',
+                        backgroundColor: 'transparent',
                         borderWidth: 2,
                         tension: 0.3,
                         yAxisID: 'y'
@@ -855,7 +927,6 @@ def main():
     parser.add_argument("--runs", type=int, default=NUM_RUNS_PER_TASK, help="Number of runs per task")
     parser.add_argument("--warmup", action="store_true", help="Perform a warmup query before benchmarking")
     
-    # Model configuration parameters to record (for model comparison)
     parser.add_argument("--quant", default="Unknown", help="Quantization (e.g. Q4_K_M, Q8_0, IQ4_NL)")
     parser.add_argument("--context-len", default="Unknown", help="Context window length (e.g. 16k, 32k)")
     parser.add_argument("--mtp", default="Unknown", help="Multi-token prediction settings (e.g. off, 1, 2, 4)")
@@ -868,7 +939,6 @@ def main():
 
     args = parser.parse_args()
 
-    # Consolidate config fields for reporting
     config_dict = {
         "api_base": args.api_base,
         "model": args.model,
@@ -886,7 +956,7 @@ def main():
     }
 
     print("=" * 60)
-    print(" LMS MODEL BENCHMARK HARNESS")
+    print(" LMS MODEL BENCHMARK HARNESS (SANDBOXED RUNNER)")
     print("=" * 60)
     print(f"Target URL:    {args.api_base}")
     print(f"Model Name:    {args.model}")
@@ -909,7 +979,6 @@ def main():
 
     print(f"Discovered {len(tasks)} tasks to evaluate.")
     
-    # 0. Warmup run (optional but highly recommended to avoid measuring cache load time)
     if args.warmup:
         print("\nPerforming warmup request to wake model...")
         try:
@@ -926,12 +995,23 @@ def main():
     for task in tasks:
         task_path = os.path.join(bench_dir, task)
         prompt_file = os.path.join(task_path, "prompt.txt")
+        metadata_file = os.path.join(task_path, "metadata.json")
+        
         if not os.path.exists(prompt_file):
             print(f"Skipping task '{task}' - prompt.txt is missing.")
             continue
 
         with open(prompt_file, "r", encoding="utf-8") as f:
             prompt = f.read()
+
+        # Load task metadata
+        task_meta = {}
+        if os.path.exists(metadata_file):
+            try:
+                with open(metadata_file, "r", encoding="utf-8") as f:
+                    task_meta = json.load(f)
+            except Exception:
+                pass
 
         for run_idx in range(1, args.runs + 1):
             print(f"\nEvaluating task '{task}' (Run {run_idx}/{args.runs})...")
@@ -941,18 +1021,26 @@ def main():
                 response_text, ttft, wall_time, token_count, is_estimated = query_model(
                     args.api_base, args.api_type, args.model, prompt
                 )
-                tps = token_count / wall_time if wall_time > 0 else 0
-                speed_str = f"{tps:.1f} tok/s" + (" (est)" if is_estimated else "")
-                print(f"  API Response: TTFT={ttft:.3f}s, Time={wall_time:.2f}s, Tokens={token_count}, Speed={speed_str}")
+                
+                # Split TPS into End-to-End and Pure Decode
+                e2e_tps = token_count / wall_time if wall_time > 0 else 0
+                decode_time = max(wall_time - ttft, 1e-6)
+                decode_tps = token_count / decode_time
+                
+                est_suffix = " (est)" if is_estimated else ""
+                print(f"  API Response: TTFT={ttft:.3f}s, Time={wall_time:.2f}s, Tokens={token_count}")
+                print(f"  Speed: Decode={decode_tps:.1f} tok/s{est_suffix}, E2E={e2e_tps:.1f} tok/s{est_suffix}")
             except Exception as e:
                 print(f"  [ERROR] API Query failed: {e}")
                 results.append({
                     "task": task,
+                    "metadata": task_meta,
                     "run_index": run_idx,
                     "passed": False,
                     "ttft": 0.0,
                     "wall_time": 0.0,
-                    "tps": 0.0,
+                    "e2e_tps": 0.0,
+                    "decode_tps": 0.0,
                     "response_text": "",
                     "extracted_code": "",
                     "test_output": f"API Request Failed: {e}",
@@ -962,28 +1050,24 @@ def main():
 
             # 2. Extract code
             extracted_code = extract_python_code(response_text)
-            
-            solution_file = os.path.join(task_path, "solution.py")
-            with open(solution_file, "w", encoding="utf-8") as f:
-                f.write(extracted_code)
 
-            # 3. Run unit tests
-            print(f"  Executing unit tests via pytest...")
-            passed, test_output = run_task_tests(task_path, timeout_sec=TEST_TIMEOUT)
+            # 3. Run unit tests in isolated temporary sandbox directory
+            print(f"  Executing unit tests via pytest in isolated sandbox...")
+            passed, test_output = run_task_tests(task_path, extracted_code, base_dir, timeout_sec=TEST_TIMEOUT)
             
             status_str = "PASS" if passed else "FAIL"
             print(f"  Test Result: {status_str}")
             
-            # Store results (strip local base paths from outputs to prevent leaks)
-            relative_task_path = os.path.relpath(task_path, base_dir)
-            
+            # Store results, clean local path references to protect repo hygiene
             results.append({
                 "task": task,
+                "metadata": task_meta,
                 "run_index": run_idx,
                 "passed": passed,
                 "ttft": ttft,
                 "wall_time": wall_time,
-                "tps": tps,
+                "e2e_tps": e2e_tps,
+                "decode_tps": decode_tps,
                 "response_text": response_text,
                 "extracted_code": extracted_code,
                 "test_output": test_output.replace(base_dir, ""),

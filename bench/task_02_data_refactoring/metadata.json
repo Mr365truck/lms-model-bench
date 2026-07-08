@@ -1,0 +1,6 @@
+{
+  "name": "Rolling Metrics Processor",
+  "difficulty": "Hard",
+  "category": "Refactoring",
+  "description": "Evaluates refactoring skills and mathematical implementation by converting an O(N^2) statistics calculation over a log stream into a fast O(W) sliding window metrics processor with mean, variance, and anomaly detection."
+}

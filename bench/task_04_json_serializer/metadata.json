@@ -1,0 +1,6 @@
+{
+  "name": "Custom JSON Serializer",
+  "difficulty": "Hard",
+  "category": "Serialization",
+  "description": "Evaluates complex serialization rules and algorithm construction. The model must implement custom types parsing and transitive/direct circular reference detection."
+}

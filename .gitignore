@@ -1,24 +1,22 @@
-# Pytest cache and python bytecode
-.pytest_cache/
-__pycache__/
-**/__pycache__/
-**/solution.py
-**/__init__.py
-
-# Benchmark run logs and reports
+# Staged generated benchmark results & reports
 benchmark_results.json
 benchmark_report.html
 
-# Temporary scrap files
-*.txt
-!**/prompt.txt
-*.json
-*.md
-!README.md
-!chat_transcript.md
-/scratch/
-/decoded_enqueue_*
-/chat_plain_text.txt
-/chat_section.txt
-/chat_transcript.md
-/extracted_strings.txt
+# Sandbox and task-specific solution code
+bench/**/solution.py
+bench/**/__pycache__/
+bench/**/.pytest_cache/
+.pytest_cache/
+sandbox_tmp/
+
+# Local python caches
+__pycache__/
+**/__pycache__/
+
+# Scratch files and text outputs
+scratch/
+decoded_enqueue_*
+chat_plain_text.txt
+chat_section.txt
+chat_transcript.md
+extracted_strings.txt

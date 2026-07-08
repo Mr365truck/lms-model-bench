@@ -1,0 +1,6 @@
+{
+  "name": "Atomic Transaction Manager",
+  "difficulty": "Medium",
+  "category": "Bugfix",
+  "description": "Evaluates transactional logic, state preservation, and atomic rollbacks. The model must fix bugs in a bank account transaction manager to enforce overdraft limits and maintain consistent state."
+}

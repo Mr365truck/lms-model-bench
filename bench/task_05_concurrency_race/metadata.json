@@ -1,0 +1,6 @@
+{
+  "name": "Thread-Safe Task Worker",
+  "difficulty": "Hard",
+  "category": "Concurrency",
+  "description": "Evaluates thread safety, worker pool patterns, queue coordination, and avoidance of race conditions/deadlocks under stress testing."
+}

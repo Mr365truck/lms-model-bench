@@ -1,9 +1,13 @@
 Fix the bugs in the following `TransactionManager` class to make it robust and transactionally safe.
 
-The current implementation contains several critical bugs:
-1. It allows transaction amounts of exactly `0.0`, which is invalid and should be rejected with a `ValueError`.
-2. The `rollback` method does not correctly restore the account balance to the state before the rolled-back transaction began. Specifically, a rollback of a pending transaction should revert *only* that transaction's changes without affecting other transactions, and should restore the balance correctly.
-3. The `commit` method commits all pending transactions. If committing these transactions would make the account balance drop below the `overdraft_limit` (i.e. `balance < -overdraft_limit`), the entire batch must be rejected (atomic commit), and the balance must revert to the state before the commit was attempted. Currently, it commits them one by one without atomicity, leaving the account in an invalid state if it fails halfway.
+### Requirements:
+1. `add_transaction(self, transaction_id: str, amount: float)`: Enqueues a transaction with `amount` into `self.pending_transactions`.
+   - **Do NOT** mutate `self.balance` inside `add_transaction()`. The balance must only change when a successful `commit()` is executed.
+   - If `amount` is exactly `0.0`, raise a `ValueError`.
+2. `rollback(self, transaction_id: str)`: Reverts/removes the pending transaction matching `transaction_id` from `self.pending_transactions`. It does not modify `self.balance` (since it was never committed).
+3. `commit(self)`: Commits all pending transactions.
+   - It is **atomic**: Check the final balance after applying all pending transactions in the batch. If the final balance would drop below the `overdraft_limit` (i.e. `proposed_balance < -self.overdraft_limit`), the entire batch must be rejected (atomic commit failure): raise a `ValueError`, clear/discard all `pending_transactions` in this batch, and leave `self.balance` unchanged from its state before the commit was attempted.
+   - Otherwise, update `self.balance` with the cumulative changes, append the transactions to `self.transaction_history`, and clear `self.pending_transactions`.
 
 ### Buggy Code to Fix:
 ```python
@@ -15,33 +19,24 @@ class TransactionManager:
         self.transaction_history = []
 
     def add_transaction(self, transaction_id: str, amount: float):
-        # BUG: Does not check for 0.0 amount
+        # BUG: Currently modifies balance immediately and doesn't check for 0.0 amount
         self.pending_transactions.append((transaction_id, amount))
         self.balance += amount
 
     def rollback(self, transaction_id: str):
-        # BUG: Incorrect rollback logic that doesn't restore balance properly
-        # or handle out-of-order rollbacks cleanly.
+        # BUG: Reverts from pending but doesn't handle the deferred balance model cleanly
         for idx, (t_id, amt) in enumerate(self.pending_transactions):
             if t_id == transaction_id:
                 self.pending_transactions.pop(idx)
-                # Does not revert balance changes!
                 break
 
     def commit(self):
-        # BUG: Commits one by one. If balance drops below overdraft limit,
-        # it fails but leaves already processed transactions committed.
+        # BUG: Commits one by one without batch-wide atomicity or deferred balance updates
         for t_id, amt in self.pending_transactions:
             if self.balance < -self.overdraft_limit:
                 raise ValueError("Overdraft limit exceeded")
             self.transaction_history.append((t_id, amt))
         self.pending_transactions = []
 ```
-
-### Requirements:
-Modify the methods so that:
-- Adding a transaction with `amount == 0.0` raises `ValueError`.
-- Rollback of a pending transaction reverts its amount from the active balance and removes it from pending transactions.
-- Commit is **atomic**: If the final balance after applying all pending transactions would violate the overdraft limit (i.e. `balance < -overdraft_limit`), raise a `ValueError`, rollback *all* pending transactions in this commit batch, and restore the balance to what it was *before* this commit block was executed.
 
 Please return only the complete, corrected python code inside a ```python ... ``` block, starting with the class definition. No explanations.

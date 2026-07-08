@@ -136,22 +136,20 @@ class TransactionManager:
         if amount == 0.0:
             raise ValueError("Transaction amount cannot be zero")
         self.pending_transactions.append((transaction_id, amount))
-        self.balance += amount
 
     def rollback(self, transaction_id: str):
         for idx, (t_id, amt) in enumerate(self.pending_transactions):
             if t_id == transaction_id:
                 self.pending_transactions.pop(idx)
-                self.balance -= amt
                 break
 
     def commit(self):
-        if self.balance < -self.overdraft_limit:
-            for t_id, amt in reversed(self.pending_transactions):
-                self.balance -= amt
+        proposed_balance = self.balance + sum(amt for _, amt in self.pending_transactions)
+        if proposed_balance < -self.overdraft_limit:
             self.pending_transactions = []
             raise ValueError("Commit failed: Overdraft limit exceeded")
             
+        self.balance = proposed_balance
         for t_id, amt in self.pending_transactions:
             self.transaction_history.append((t_id, amt))
         self.pending_transactions = []
