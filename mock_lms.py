@@ -224,9 +224,19 @@ class ThreadSafeTaskWorker:
         self.active_tasks = 0
         self.active_lock = threading.Lock()
         self.completion_event = threading.Event()
+        self.submitted_ids = set()
+        self.submitted_lock = threading.Lock()
         self.running = False
+        self.stopped = False
 
     def submit_task(self, task_id: str, func: callable, *args, **kwargs) -> None:
+        with self.submitted_lock:
+            if self.stopped:
+                raise RuntimeError("Worker pool is stopped")
+            if task_id in self.submitted_ids:
+                raise ValueError(f"Duplicate task ID: {task_id}")
+            self.submitted_ids.add(task_id)
+
         with self.active_lock:
             self.active_tasks += 1
             if self.active_tasks > 0:
@@ -234,7 +244,9 @@ class ThreadSafeTaskWorker:
         self.task_queue.put((task_id, func, args, kwargs))
 
     def _worker_loop(self):
-        while self.running:
+        while True:
+            if not self.running and self.task_queue.empty():
+                break
             try:
                 task = self.task_queue.get(timeout=0.05)
             except queue.Empty:
@@ -256,9 +268,13 @@ class ThreadSafeTaskWorker:
                         self.completion_event.set()
 
     def start(self) -> None:
-        self.running = True
+        with self.active_lock:
+            if self.running:
+                return
+            self.running = True
+            
         for i in range(self.num_workers):
-            t = threading.Thread(target=self._worker_loop, daemon=True)
+            t = threading.Thread(target=self._worker_loop)
             t.start()
             self.threads.append(t)
 
@@ -277,15 +293,22 @@ class ThreadSafeTaskWorker:
             return dict(self.errors)
 
     def stop(self) -> None:
+        with self.submitted_lock:
+            self.stopped = True
         self.running = False
+        
         while not self.task_queue.empty():
             try:
                 self.task_queue.get_nowait()
                 self.task_queue.task_done()
+                with self.active_lock:
+                    self.active_tasks -= 1
+                    if self.active_tasks == 0:
+                        self.completion_event.set()
             except queue.Empty:
                 break
         for t in self.threads:
-            t.join(timeout=0.1)
+            t.join()
         self.threads = []
 ```"""
 }

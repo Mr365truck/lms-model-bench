@@ -7,6 +7,7 @@ import re
 import subprocess
 import shutil
 import tempfile
+import html
 import requests
 
 # ==============================================================================
@@ -172,28 +173,32 @@ def query_model(api_base, api_type, model_name, prompt):
     return full_text, ttft, total_time, token_count, is_estimated
 
 def run_task_tests(task_dir, extracted_code, base_dir, timeout_sec=TEST_TIMEOUT):
-    """Executes the test suite inside an isolated temporary sandbox directory to prevent workspace leaks/damage."""
+    """Executes the test suite inside an isolated temporary directory to prevent workspace leaks/damage."""
     sandbox_base = os.path.join(base_dir, "sandbox_tmp")
     os.makedirs(sandbox_base, exist_ok=True)
     
     # Create temporary directory inside workspace sandbox_base
     with tempfile.TemporaryDirectory(dir=sandbox_base) as temp_dir:
-        # 1. Write the extracted code to solution.py
+        # 1. Copy the entire task directory to the temp runner directory
+        shutil.copytree(
+            task_dir,
+            temp_dir,
+            dirs_exist_ok=True,
+            ignore=shutil.ignore_patterns("solution.py", "__pycache__", ".pytest_cache")
+        )
+        
+        # 2. Write the extracted code to solution.py in the temp directory (overwriting if it exists)
         solution_file = os.path.join(temp_dir, "solution.py")
         with open(solution_file, "w", encoding="utf-8") as f:
             f.write(extracted_code)
             
-        # 2. Copy the task's tests.py to the sandbox
-        src_tests = os.path.join(task_dir, "tests.py")
-        dst_tests = os.path.join(temp_dir, "tests.py")
-        if os.path.exists(src_tests):
-            shutil.copy(src_tests, dst_tests)
+        # 3. Create empty __init__.py if not present
+        init_file = os.path.join(temp_dir, "__init__.py")
+        if not os.path.exists(init_file):
+            with open(init_file, "w") as f:
+                pass
             
-        # 3. Create empty __init__.py to facilitate imports
-        with open(os.path.join(temp_dir, "__init__.py"), "w") as f:
-            pass
-            
-        # 4. Prepare execution command
+        # 4. Prepare execution command running pytest on tests.py
         cmd = [sys.executable, "-m", "pytest", "-v", "tests.py"]
         
         # Build clean environment with PYTHONPATH pointing to the isolated directory
@@ -956,7 +961,7 @@ def main():
     }
 
     print("=" * 60)
-    print(" LMS MODEL BENCHMARK HARNESS (SANDBOXED RUNNER)")
+    print(" LMS MODEL BENCHMARK HARNESS (ISOLATED TEMP RUNNER)")
     print("=" * 60)
     print(f"Target URL:    {args.api_base}")
     print(f"Model Name:    {args.model}")
@@ -988,9 +993,6 @@ def main():
             print(f"Warmup failed (skipping): {e}")
 
     results = []
-
-    global html
-    import html
 
     for task in tasks:
         task_path = os.path.join(bench_dir, task)
@@ -1051,8 +1053,8 @@ def main():
             # 2. Extract code
             extracted_code = extract_python_code(response_text)
 
-            # 3. Run unit tests in isolated temporary sandbox directory
-            print(f"  Executing unit tests via pytest in isolated sandbox...")
+            # 3. Run unit tests in isolated temporary directory
+            print(f"  Executing unit tests via pytest in isolated temp runner...")
             passed, test_output = run_task_tests(task_path, extracted_code, base_dir, timeout_sec=TEST_TIMEOUT)
             
             status_str = "PASS" if passed else "FAIL"

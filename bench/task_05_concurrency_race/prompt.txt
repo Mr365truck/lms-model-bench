@@ -4,12 +4,20 @@ The system manages a pool of worker threads to process tasks concurrently and co
 
 ### Requirements:
 1. `__init__(self, num_workers: int)`: Initializes the system with a specified number of worker threads.
-2. `submit_task(self, task_id: str, func: callable, *args, **kwargs) -> None`: Submits a task to be processed. The task should be put into a queue. Workers must pick up tasks from the queue and run them.
-3. `start(self) -> None`: Starts the worker threads to begin processing tasks in parallel.
+2. `submit_task(self, task_id: str, func: callable, *args, **kwargs) -> None`: Submits a task to be processed. 
+   - If the `task_id` already exists (has been submitted previously and is either pending, executing, completed, or failed), raise a `ValueError`.
+   - If `stop()` has already been called on this worker, raise a `RuntimeError`.
+   - Enqueues the task to be picked up by worker threads.
+3. `start(self) -> None`: Starts the worker threads to begin processing tasks in parallel. 
+   - Calling `start()` multiple times should be a no-op (i.e. do not spawn extra threads).
 4. `wait_completion(self, timeout: float = None) -> bool`: Blocks until all currently submitted tasks are fully processed by the workers, then returns `True`. If `timeout` is reached before completion, return `False`.
 5. `get_results(self) -> dict[str, any]`: Returns a dictionary mapping completed `task_id` to its return value.
 6. `get_errors(self) -> dict[str, Exception]`: Returns a dictionary mapping failed `task_id` to the Exception raised during execution.
-7. `stop(self) -> None`: Cleanly shuts down the worker threads. Threads must not leak or hang.
+7. `stop(self) -> None`: Shuts down the worker pool using the following semantics:
+   - Sets the state to reject any further task submissions.
+   - Clears/cancels all queued tasks that have **not started** executing yet.
+   - Blocks and waits (joins threads) for any currently active in-flight tasks to finish.
+   - Cleanly cleans up thread handles.
 
 Ensure that the execution state (submitting, starting, waiting, stopping, logging results/errors) is thread-safe and free from race conditions, and does not deadlock.
 

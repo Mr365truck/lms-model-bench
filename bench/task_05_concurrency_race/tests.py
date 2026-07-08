@@ -42,20 +42,35 @@ def test_task_worker_basic():
     
     worker.stop()
 
-def test_submit_after_start():
+def test_duplicate_task_id():
+    from solution import ThreadSafeTaskWorker
+    
+    worker = ThreadSafeTaskWorker(num_workers=2)
+    worker.submit_task("dup", lambda: 1)
+    
+    # Submitting duplicate ID should raise ValueError
+    with pytest.raises(ValueError):
+        worker.submit_task("dup", lambda: 2)
+        
+    worker.start()
+    worker.wait_completion(timeout=1.0)
+    
+    # Check that subsequent submit_task of completed task ID also raises ValueError
+    with pytest.raises(ValueError):
+        worker.submit_task("dup", lambda: 3)
+        
+    worker.stop()
+
+def test_submit_after_stop():
     from solution import ThreadSafeTaskWorker
     
     worker = ThreadSafeTaskWorker(num_workers=2)
     worker.start()
-    
-    # Submit after start is called
-    worker.submit_task("t1", lambda: 42)
-    
-    completed = worker.wait_completion(timeout=1.0)
-    assert completed is True
-    assert worker.get_results()["t1"] == 42
-    
     worker.stop()
+    
+    # Submitting task after stop() must raise RuntimeError
+    with pytest.raises(RuntimeError):
+        worker.submit_task("post_stop", lambda: 1)
 
 def test_start_twice():
     from solution import ThreadSafeTaskWorker
@@ -63,7 +78,7 @@ def test_start_twice():
     worker = ThreadSafeTaskWorker(num_workers=2)
     worker.start()
     
-    # Starting twice should not crash or double spawn threads (leak check)
+    # Starting twice should be a no-op
     try:
         worker.start()
     except Exception as e:
@@ -79,7 +94,6 @@ def test_wait_before_tasks():
     from solution import ThreadSafeTaskWorker
     
     worker = ThreadSafeTaskWorker(num_workers=2)
-    # wait_completion before starting or submitting anything should return True immediately
     assert worker.wait_completion(timeout=1.0) is True
     
     worker.start()
@@ -87,30 +101,47 @@ def test_wait_before_tasks():
     
     worker.stop()
 
-def test_stop_with_pending_work():
+def test_stop_semantics():
     from solution import ThreadSafeTaskWorker
     
     worker = ThreadSafeTaskWorker(num_workers=2)
     
-    # Submit several slow tasks
+    # 2 workers. Submit 2 slow tasks (will start executing immediately on start)
+    # and 8 queued tasks (will sit in the queue)
     def slow_task():
-        time.sleep(1.0)
-        return 1
+        time.sleep(0.3)
+        return 100
         
-    for i in range(10):
-        worker.submit_task(f"slow_{i}", slow_task)
+    def normal_task():
+        return 200
+        
+    worker.submit_task("active_1", slow_task)
+    worker.submit_task("active_2", slow_task)
+    
+    for i in range(8):
+        worker.submit_task(f"queued_{i}", normal_task)
         
     worker.start()
-    # Sleep slightly so workers pick up a couple of tasks, then stop immediately
+    # Let workers pick up the first 2 tasks
     time.sleep(0.05)
     
-    # stop() should terminate threads quickly without hanging, even though tasks are in queue
-    start_stop = time.time()
+    # stop() should clear/cancel the 8 queued tasks and wait for the 2 active tasks to finish
+    start_time = time.time()
     worker.stop()
-    stop_duration = time.time() - start_stop
+    stop_duration = time.time() - start_time
     
-    # Should stop in under 0.5s (should not block for 10 seconds!)
+    # stop_duration should reflect the active tasks remaining time (around 0.25s)
+    # and should NOT wait for the other 8 tasks. So it should be < 0.5s.
     assert stop_duration < 0.5
+    assert stop_duration > 0.1
+    
+    # Verify results: active_1 and active_2 have results, the others are cancelled
+    results = worker.get_results()
+    assert results["active_1"] == 100
+    assert results["active_2"] == 100
+    
+    for i in range(8):
+        assert f"queued_{i}" not in results
 
 def test_timeout_expired():
     from solution import ThreadSafeTaskWorker
@@ -118,42 +149,23 @@ def test_timeout_expired():
     worker = ThreadSafeTaskWorker(num_workers=1)
     
     def slow_task():
-        time.sleep(0.5)
+        time.sleep(0.4)
         return 1
         
     worker.submit_task("slow", slow_task)
     worker.start()
     
-    # Wait with a short timeout. Since task takes 0.5s, wait_completion(0.05) must return False
     completed = worker.wait_completion(timeout=0.05)
     assert completed is False
     
     worker.wait_completion(timeout=1.0)
     worker.stop()
 
-def test_duplicate_task_ids():
-    from solution import ThreadSafeTaskWorker
-    
-    worker = ThreadSafeTaskWorker(num_workers=2)
-    
-    # Submit tasks with duplicate IDs. The later one should replace or overwrite, or execute.
-    # What's important is the results dict handles it cleanly (either runs both and overrides key, or logs it).
-    worker.submit_task("dup", lambda: "first")
-    worker.submit_task("dup", lambda: "second")
-    
-    worker.start()
-    worker.wait_completion(timeout=1.0)
-    
-    # The final value in results should be either "first" or "second" (typically "second")
-    assert worker.get_results()["dup"] in ["first", "second"]
-    
-    worker.stop()
-
 def test_stress_many_tasks():
     from solution import ThreadSafeTaskWorker
     
-    num_tasks = 150
-    worker = ThreadSafeTaskWorker(num_workers=10)
+    num_tasks = 100
+    worker = ThreadSafeTaskWorker(num_workers=5)
     
     def add_one(x):
         return x + 1
@@ -162,7 +174,7 @@ def test_stress_many_tasks():
         worker.submit_task(f"t_{i}", add_one, i)
         
     worker.start()
-    completed = worker.wait_completion(timeout=3.0)
+    completed = worker.wait_completion(timeout=2.0)
     assert completed is True
     
     results = worker.get_results()
