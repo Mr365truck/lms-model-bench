@@ -1,0 +1,20 @@
+[
+  {
+    "id": "py101",
+    "title": "Python Foundations",
+    "capacity": 4,
+    "tags": ["python", "beginner"]
+  },
+  {
+    "id": "sql201",
+    "title": "Practical SQL",
+    "capacity": 3,
+    "tags": ["data", "sql"]
+  },
+  {
+    "id": "ml301",
+    "title": "Applied Machine Learning",
+    "capacity": 2,
+    "tags": ["python", "ml"]
+  }
+]

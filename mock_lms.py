@@ -220,58 +220,62 @@ class ThreadSafeTaskWorker:
         self.threads = []
         self.results = {}
         self.errors = {}
+        self.cancelled = set()
         self.results_lock = threading.Lock()
+        self.state_lock = threading.RLock()
         self.active_tasks = 0
-        self.active_lock = threading.Lock()
         self.completion_event = threading.Event()
+        self.completion_event.set()
         self.submitted_ids = set()
-        self.submitted_lock = threading.Lock()
-        self.running = False
+        self.started = False
         self.stopped = False
 
     def submit_task(self, task_id: str, func: callable, *args, **kwargs) -> None:
-        with self.submitted_lock:
+        with self.state_lock:
             if self.stopped:
                 raise RuntimeError("Worker pool is stopped")
             if task_id in self.submitted_ids:
                 raise ValueError(f"Duplicate task ID: {task_id}")
             self.submitted_ids.add(task_id)
-
-        with self.active_lock:
             self.active_tasks += 1
-            if self.active_tasks > 0:
-                self.completion_event.clear()
+            self.completion_event.clear()
+
         self.task_queue.put((task_id, func, args, kwargs))
 
     def _worker_loop(self):
         while True:
-            if not self.running and self.task_queue.empty():
-                break
+            with self.state_lock:
+                if self.stopped and self.task_queue.empty():
+                    break
+                    
             try:
-                task = self.task_queue.get(timeout=0.05)
+                task_id, func, args, kwargs = self.task_queue.get(timeout=0.05)
             except queue.Empty:
                 continue
 
-            task_id, func, args, kwargs = task
             try:
-                res = func(*args, **kwargs)
+                result = func(*args, **kwargs)
+            except Exception as exc:
                 with self.results_lock:
-                    self.results[task_id] = res
-            except Exception as e:
+                    self.errors[task_id] = exc
+            else:
                 with self.results_lock:
-                    self.errors[task_id] = e
+                    self.results[task_id] = result
             finally:
                 self.task_queue.task_done()
-                with self.active_lock:
-                    self.active_tasks -= 1
-                    if self.active_tasks == 0:
-                        self.completion_event.set()
+                self._mark_task_done()
+
+    def _mark_task_done(self):
+        with self.state_lock:
+            self.active_tasks -= 1
+            if self.active_tasks == 0:
+                self.completion_event.set()
 
     def start(self) -> None:
-        with self.active_lock:
-            if self.running:
+        with self.state_lock:
+            if self.started:
                 return
-            self.running = True
+            self.started = True
             
         for i in range(self.num_workers):
             t = threading.Thread(target=self._worker_loop)
@@ -279,7 +283,7 @@ class ThreadSafeTaskWorker:
             self.threads.append(t)
 
     def wait_completion(self, timeout: float = None) -> bool:
-        with self.active_lock:
+        with self.state_lock:
             if self.active_tasks == 0:
                 return True
         return self.completion_event.wait(timeout=timeout)
@@ -292,24 +296,99 @@ class ThreadSafeTaskWorker:
         with self.results_lock:
             return dict(self.errors)
 
+    def get_cancelled(self) -> set[str]:
+        with self.results_lock:
+            return set(self.cancelled)
+
     def stop(self) -> None:
-        with self.submitted_lock:
+        with self.state_lock:
             self.stopped = True
-        self.running = False
         
         while not self.task_queue.empty():
             try:
-                self.task_queue.get_nowait()
+                task_id, _, _, _ = self.task_queue.get_nowait()
                 self.task_queue.task_done()
-                with self.active_lock:
-                    self.active_tasks -= 1
-                    if self.active_tasks == 0:
-                        self.completion_event.set()
             except queue.Empty:
                 break
+            with self.results_lock:
+                self.cancelled.add(task_id)
+            self._mark_task_done()
+
         for t in self.threads:
             t.join()
         self.threads = []
+```""",
+
+    # Task 6: File-backed LMS Analytics
+    "learninganalytics": """```python
+import csv
+import json
+import os
+
+
+class LearningAnalytics:
+    def __init__(self, data_dir: str | None = None):
+        if data_dir is None:
+            data_dir = os.path.join(os.path.dirname(__file__), "fixtures")
+
+        with open(os.path.join(data_dir, "courses.json"), "r", encoding="utf-8") as f:
+            courses = json.load(f)
+
+        self.courses = {course["id"]: course for course in courses}
+        self.enrollments = []
+        with open(os.path.join(data_dir, "enrollments.csv"), "r", encoding="utf-8", newline="") as f:
+            for row in csv.DictReader(f):
+                self.enrollments.append({
+                    "learner_id": row["learner_id"],
+                    "course_id": row["course_id"],
+                    "status": row["status"],
+                    "score": float(row["score"]),
+                    "minutes": int(row["minutes"]),
+                })
+
+    def course_summary(self, course_id: str) -> dict:
+        if course_id not in self.courses:
+            raise KeyError(course_id)
+
+        course = self.courses[course_id]
+        rows = [row for row in self.enrollments if row["course_id"] == course_id]
+        completed = [row for row in rows if row["status"] == "completed"]
+        enrolled_count = len(rows)
+        completed_count = len(completed)
+
+        average_score = 0.0
+        if completed:
+            average_score = round(sum(row["score"] for row in completed) / len(completed), 2)
+
+        return {
+            "course_id": course_id,
+            "title": course["title"],
+            "capacity": course["capacity"],
+            "enrolled": enrolled_count,
+            "completed": completed_count,
+            "completion_rate": round(completed_count / enrolled_count, 3) if enrolled_count else 0.0,
+            "average_score": average_score,
+            "is_over_capacity": enrolled_count > course["capacity"],
+        }
+
+    def learner_report(self, learner_id: str) -> dict:
+        rows = [row for row in self.enrollments if row["learner_id"] == learner_id]
+        completed = [row for row in rows if row["status"] == "completed"]
+
+        average_completed_score = 0.0
+        if completed:
+            average_completed_score = round(
+                sum(row["score"] for row in completed) / len(completed),
+                2,
+            )
+
+        return {
+            "learner_id": learner_id,
+            "courses": [row["course_id"] for row in rows],
+            "completed_courses": len(completed),
+            "total_minutes": sum(row["minutes"] for row in rows),
+            "average_completed_score": average_completed_score,
+        }
 ```"""
 }
 

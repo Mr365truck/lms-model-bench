@@ -173,7 +173,7 @@ def query_model(api_base, api_type, model_name, prompt):
     return full_text, ttft, total_time, token_count, is_estimated
 
 def run_task_tests(task_dir, extracted_code, base_dir, timeout_sec=TEST_TIMEOUT):
-    """Executes the test suite inside an isolated temporary directory to prevent workspace leaks/damage."""
+    """Executes the test suite inside an isolated temporary directory."""
     sandbox_base = os.path.join(base_dir, "sandbox_tmp")
     os.makedirs(sandbox_base, exist_ok=True)
     
@@ -201,9 +201,12 @@ def run_task_tests(task_dir, extracted_code, base_dir, timeout_sec=TEST_TIMEOUT)
         # 4. Prepare execution command running pytest on tests.py
         cmd = [sys.executable, "-m", "pytest", "-v", "tests.py"]
         
-        # Build clean environment with PYTHONPATH pointing to the isolated directory
-        clean_env = os.environ.copy()
-        clean_env["PYTHONPATH"] = temp_dir
+        # Keep generated code from inheriting local credentials and app config.
+        # This is process isolation for benchmark hygiene, not a security sandbox.
+        clean_env = {
+            "PYTHONPATH": temp_dir,
+            "PATH": os.environ.get("PATH", ""),
+        }
         
         try:
             result = subprocess.run(

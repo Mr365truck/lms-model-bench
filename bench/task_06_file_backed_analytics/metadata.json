@@ -1,0 +1,6 @@
+{
+  "name": "File-Backed LMS Analytics",
+  "difficulty": "Medium",
+  "category": "Multi-file Data Processing",
+  "description": "Evaluates whether generated code can load bundled JSON and CSV fixture files, normalize enrollment data, and compute deterministic LMS analytics from multiple local files."
+}

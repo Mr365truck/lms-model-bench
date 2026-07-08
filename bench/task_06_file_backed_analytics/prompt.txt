@@ -1,0 +1,27 @@
+Implement a Python class `LearningAnalytics` that computes course and learner metrics from bundled LMS data files.
+
+The test runner will provide these files next to your `solution.py`:
+- `fixtures/courses.json`
+- `fixtures/enrollments.csv`
+
+Requirements:
+1. `__init__(self, data_dir: str | None = None)`: Load the two fixture files. If `data_dir` is `None`, default to the `fixtures` directory located next to `solution.py`.
+2. `course_summary(self, course_id: str) -> dict`: Return a dictionary with:
+   - `course_id`
+   - `title`
+   - `capacity`
+   - `enrolled`: number of enrollment rows for the course
+   - `completed`: number of rows whose status is `"completed"`
+   - `completion_rate`: completed / enrolled rounded to 3 decimals, or `0.0` when enrolled is zero
+   - `average_score`: average score among completed rows only, rounded to 2 decimals, or `0.0` when none completed
+   - `is_over_capacity`: true when enrolled is greater than capacity
+3. `learner_report(self, learner_id: str) -> dict`: Return a dictionary with:
+   - `learner_id`
+   - `courses`: list of course IDs for that learner, in file order
+   - `completed_courses`: number of completed rows
+   - `total_minutes`: sum of minutes across that learner's rows
+   - `average_completed_score`: average score across completed rows only, rounded to 2 decimals, or `0.0` when none completed
+4. Raise `KeyError` for unknown course IDs in `course_summary`.
+5. Unknown learners should return an empty report with zero metrics.
+
+Use only the Python standard library. Please return only the python code inside a ```python ... ``` block.

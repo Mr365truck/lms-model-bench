@@ -6,17 +6,19 @@ This benchmarking suite implements the workflow discussed in [ChatGPT Model Benc
 
 ## Features
 - **3 Endpoint Protocols**: Out-of-the-box support for OpenAI, Anthropic, and LM Studio native APIs.
-- **5 Standard Coding Tasks**:
-  1. `task_01_lru_cache`: Implement an O(1) LRU Cache.
-  2. `task_02_merge_intervals`: Merge overlapping intervals.
-  3. `task_03_trie`: Implement a Prefix Tree (Trie).
-  4. `task_04_balanced_brackets`: Check balanced bracket strings.
-  5. `task_05_binary_search`: Binary search for a target range.
+- **6 Standard Coding Tasks**:
+  1. `task_01_api_integration`: Implement a paginated REST API client with rate-limit retries.
+  2. `task_02_data_refactoring`: Refactor log processing into rolling window metrics.
+  3. `task_03_bugfix_transaction`: Fix atomic transaction commit and rollback behavior.
+  4. `task_04_json_serializer`: Implement custom JSON serialization with circular-reference detection.
+  5. `task_05_concurrency_race`: Implement a thread-safe worker pool with defined stop semantics.
+  6. `task_06_file_backed_analytics`: Compute LMS analytics from bundled JSON and CSV fixture files.
 - **Rich Metric Tracking**:
   - **TTFT**: Time to First Token (calculated via streaming response).
   - **Speed**: Output Tokens per Second (TPS).
   - **Wall Time**: Total request round-trip time.
   - **Pass Rate**: Pytest validation of the generated code.
+- **Isolated Temp Runner**: Each generated solution is tested in a copied temporary task directory with a minimal environment containing only `PYTHONPATH` and `PATH`. This protects benchmark hygiene, but it is not a security sandbox for hostile generated code.
 - **Premium Reports**: Automatically compiles results into a beautiful HTML visual report (`benchmark_report.html`) with graphs and expandable detailed run logs.
 
 ---

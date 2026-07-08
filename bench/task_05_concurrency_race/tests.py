@@ -105,40 +105,47 @@ def test_stop_semantics():
     from solution import ThreadSafeTaskWorker
     
     worker = ThreadSafeTaskWorker(num_workers=2)
-    
-    # 2 workers. Submit 2 slow tasks (will start executing immediately on start)
-    # and 8 queued tasks (will sit in the queue)
-    def slow_task():
+
+    started = [threading.Event(), threading.Event()]
+    queued_executed = []
+    queued_lock = threading.Lock()
+
+    # 2 workers. Submit 2 slow tasks and wait until both are actually active
+    # before calling stop(), so this test does not depend on scheduler timing.
+    def slow_task(index):
+        started[index].set()
         time.sleep(0.3)
         return 100
         
     def normal_task():
+        with queued_lock:
+            queued_executed.append(True)
         return 200
         
-    worker.submit_task("active_1", slow_task)
-    worker.submit_task("active_2", slow_task)
+    worker.submit_task("active_1", slow_task, 0)
+    worker.submit_task("active_2", slow_task, 1)
     
     for i in range(8):
         worker.submit_task(f"queued_{i}", normal_task)
         
     worker.start()
-    # Let workers pick up the first 2 tasks
-    time.sleep(0.05)
+    assert started[0].wait(timeout=1.0)
+    assert started[1].wait(timeout=1.0)
     
     # stop() should clear/cancel the 8 queued tasks and wait for the 2 active tasks to finish
     start_time = time.time()
     worker.stop()
     stop_duration = time.time() - start_time
     
-    # stop_duration should reflect the active tasks remaining time (around 0.25s)
-    # and should NOT wait for the other 8 tasks. So it should be < 0.5s.
+    # stop_duration should reflect the active tasks and should NOT wait for the
+    # other 8 queued tasks to execute.
     assert stop_duration < 0.5
-    assert stop_duration > 0.1
     
     # Verify results: active_1 and active_2 have results, the others are cancelled
     results = worker.get_results()
     assert results["active_1"] == 100
     assert results["active_2"] == 100
+    assert queued_executed == []
     
     for i in range(8):
         assert f"queued_{i}" not in results

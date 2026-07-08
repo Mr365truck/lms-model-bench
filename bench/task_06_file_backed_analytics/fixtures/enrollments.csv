@@ -1,0 +1,10 @@
+learner_id,course_id,status,score,minutes
+u1,py101,completed,92,180
+u2,py101,in_progress,71,95
+u3,py101,completed,84,150
+u4,py101,dropped,0,20
+u1,sql201,completed,88,130
+u2,sql201,completed,79,115
+u5,sql201,in_progress,66,60
+u3,ml301,completed,91,210
+u4,ml301,in_progress,74,120
