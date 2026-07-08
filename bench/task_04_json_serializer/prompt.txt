@@ -1,0 +1,17 @@
+Implement a custom JSON serializer function `serialize_custom(obj, indent: int = None) -> str` in Python.
+
+The function must serialize Python data structures into a valid JSON string.
+
+### Serialization Rules:
+1. **Primitives**: Support `None`, `bool` (converted to `true`/`false`), `int`, `float`, and `str` (properly escaped).
+2. **Collections**: Support list/tuple (serialized as JSON arrays) and dict (serialized as JSON objects). Dict keys must be strings (coerce if necessary).
+3. **Date/Time**: Support `datetime.datetime` and `datetime.date` objects, serializing them into ISO 8601 string format (e.g. using `.isoformat()`).
+4. **Custom Objects**: If an object has a `to_json(self) -> dict` method, call it and serialize the resulting dictionary. Otherwise, if it has a `__dict__` attribute, serialize the `__dict__` dictionary.
+5. **Circular References**: You must keep track of objects currently being serialized in the active path. If a circular/cyclical reference is detected (i.e. an object references itself directly or transitively via ancestors), raise a `ValueError("Circular reference detected")`.
+
+### Input Signature:
+`def serialize_custom(obj, indent: int = None) -> str`
+
+Ensure you handle circular reference checks correctly and raise the `ValueError` immediately.
+
+Please return only the python code inside a ```python ... ``` block, starting with the function definition or helper classes. No explanations.

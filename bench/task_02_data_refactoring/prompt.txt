@@ -1,0 +1,23 @@
+Refactor a legacy, slow log parsing and metrics computation algorithm into an optimized class `MetricsProcessor`.
+
+### Legacy Logic:
+The old logic processed logs (lines of JSON strings) by reading them, parsing, and for every element computing the running average and standard deviation of a metric `latency` over a sliding time-window `window_seconds`. The old implementation recalculated the statistics from scratch for every log item (an O(N^2) operation), causing timeouts on large datasets.
+
+### Optimized Requirements:
+Implement a class `MetricsProcessor` in Python that can process logs in O(N) overall time complexity.
+
+The class must support:
+1. `__init__(self, window_seconds: int)`: Initialize with time window size.
+2. `add_log(self, log_line: str) -> dict`: Processes a JSON-formatted log line like:
+   `{"timestamp": 1672531190, "latency": 150.5, "event": "page_load"}`
+   - If the log is malformed (missing timestamp or latency), return `None`.
+   - On adding the log, slide the window: remove all previously added log elements whose timestamp is older than `current_timestamp - window_seconds`. (Logs are guaranteed to arrive in non-decreasing order of timestamps).
+   - Compute and return a dictionary of rolling statistics for the active sliding window (after adding the current log and evicting expired ones):
+     - `count`: number of log items inside the active window.
+     - `avg`: average latency inside the active window (rounded to 3 decimal places).
+     - `std`: standard deviation of latency inside the active window (rounded to 3 decimal places). If count < 2, standard deviation should be `0.0`.
+     - `anomalies`: number of items in the current window whose latency deviates from the current window's average by more than 2 standard deviations.
+
+Ensure the calculations are optimized (e.g. using running sums or variance calculations to avoid recalculating from scratch).
+
+Please return only the python code inside a ```python ... ``` block, starting with the class definition. No explanations.

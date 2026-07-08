@@ -1,0 +1,16 @@
+Implement a Python class `APIClient` for fetching data from a REST API with robust retry and pagination support.
+
+The class must support:
+1. `__init__(self, base_url: str, api_key: str, max_retries: int = 3)`: Initialize client.
+2. `fetch_page(self, endpoint: str, page: int) -> dict`: Sends a GET request to `{base_url}/{endpoint}?page={page}`. It must:
+   - Pass the header `Authorization: Bearer {api_key}`.
+   - Handle rate limits (HTTP 429): If a 429 is encountered, parse the `Retry-After` header (if present, it contains the integer seconds to wait; otherwise default to exponential backoff `2 ** attempt` seconds), sleep for that duration, and retry.
+   - Raise a custom exception `APIError(status_code: int, message: str)` for other non-200 HTTP statuses.
+   - Return the JSON parsed body.
+3. `fetch_all_records(self, endpoint: str) -> list[dict]`: Automatically paginate through all pages starting from `page = 1`. 
+   - Each API page response contains a JSON body of: `{"records": [...], "has_more": true/false}`.
+   - Extract and combine all records from all pages into a single flat list, handling pagination correctly, and return the combined list.
+
+Make sure to import `requests`, `time`, and any other required modules inside your code.
+
+Please return only the python code inside a ```python ... ``` block, starting with the exception definition and the class definition. No explanations.

@@ -8,15 +8,15 @@ import subprocess
 import requests
 
 # ==============================================================================
-# CONFIGURATION
+# CONFIGURATION DEFAULTS
 # ==============================================================================
-# Easily changeable variables matching the endpoint and model identifiers
 API_BASE = "http://localhost:5555"
 MODEL_NAME = "qwen/qwen3.6-27b"  # Default model identifier
 API_TYPE = "openai"              # Options: "openai", "anthropic", "lm_studio"
 TEMPERATURE = 0.1
 NUM_RUNS_PER_TASK = 1            # Run each task this many times for averaging
 TIMEOUT = 60                     # Timeout for API requests in seconds
+TEST_TIMEOUT = 10                # Timeout for unit test execution (prevent hangs)
 # ==============================================================================
 
 def extract_python_code(text):
@@ -49,7 +49,7 @@ def parse_openai_stream(response):
                 break
             try:
                 chunk = json.loads(data_content)
-                # Check for usage
+                # Check for usage in chunk (often in final chunk)
                 if "usage" in chunk and chunk["usage"]:
                     usage = chunk["usage"]
                 choices = chunk.get("choices", [])
@@ -91,7 +91,6 @@ def parse_anthropic_stream(response):
                         full_text += text
                         yield text, ttft, usage
                 elif current_event == "message_delta" or "usage" in chunk:
-                    # Anthropic sends usage in message_delta event
                     if "usage" in chunk:
                         usage = chunk["usage"]
                     elif "delta" in chunk and "usage" in chunk["delta"]:
@@ -100,9 +99,6 @@ def parse_anthropic_stream(response):
                 pass
 
 def parse_lm_studio_stream(response):
-    """Parses LM Studio native stream or falls back to OpenAI parser."""
-    # LM Studio's native endpoint /api/v1/chat uses a streaming format
-    # very similar to OpenAI. We can reuse the OpenAI parser.
     yield from parse_openai_stream(response)
 
 def query_model(api_base, api_type, model_name, prompt):
@@ -115,7 +111,8 @@ def query_model(api_base, api_type, model_name, prompt):
             "model": model_name,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": TEMPERATURE,
-            "stream": True
+            "stream": True,
+            "stream_options": {"include_usage": True} # Ask server to include token statistics
         }
         stream_parser = parse_openai_stream
     elif api_type == "anthropic":
@@ -131,7 +128,6 @@ def query_model(api_base, api_type, model_name, prompt):
         }
         stream_parser = parse_anthropic_stream
     elif api_type == "lm_studio":
-        # Native LM Studio chat completion
         url = f"{api_base.rstrip('/')}/api/v1/chat"
         payload = {
             "model": model_name,
@@ -145,7 +141,6 @@ def query_model(api_base, api_type, model_name, prompt):
 
     start_time = time.time()
     
-    # Send the request
     response = requests.post(url, headers=headers, json=payload, stream=True, timeout=TIMEOUT)
     response.raise_for_status()
 
@@ -162,25 +157,22 @@ def query_model(api_base, api_type, model_name, prompt):
 
     total_time = time.time() - start_time
     if ttft is None:
-        ttft = total_time # Fallback if no streaming chunks detected
+        ttft = total_time
 
-    # Calculate token count
-    # Check usage response
     token_count = None
     if usage:
-        # OpenAI style: completion_tokens, Anthropic style: output_tokens
         token_count = usage.get("completion_tokens") or usage.get("output_tokens")
     
-    # If API didn't return usage stats, estimate using standard heuristic
+    # Fallback to character-based heuristic if usage details missing
+    is_estimated = False
     if token_count is None:
-        # Heuristic: 1 token ≈ 4 characters
         token_count = max(1, int(len(full_text) / 4))
+        is_estimated = True
 
-    return full_text, ttft, total_time, token_count
+    return full_text, ttft, total_time, token_count, is_estimated
 
-def run_task_tests(task_dir):
+def run_task_tests(task_dir, timeout_sec=TEST_TIMEOUT):
     """Executes the test suite in the task folder and returns (passed, output)."""
-    # Overwrite/__init__.py to make sure it is seen as package if needed
     init_file = os.path.join(task_dir, "__init__.py")
     if not os.path.exists(init_file):
         with open(init_file, "w") as f:
@@ -188,21 +180,26 @@ def run_task_tests(task_dir):
 
     test_file = os.path.join(task_dir, "tests.py")
     
-    # Run pytest on the specific task directory tests.py
+    # Execute pytest as a subprocess with a timeout to catch infinite loops
     cmd = [sys.executable, "-m", "pytest", "-v", test_file]
     
-    result = subprocess.run(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True
-    )
-    
-    passed = (result.returncode == 0)
-    output = result.stdout + "\n" + result.stderr
+    try:
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout_sec
+        )
+        passed = (result.returncode == 0)
+        output = result.stdout + "\n" + result.stderr
+    except subprocess.TimeoutExpired:
+        passed = False
+        output = f"TIMEOUT: Test execution exceeded the limit of {timeout_sec} seconds (possible infinite loop or hang in generated code)."
+        
     return passed, output
 
-def generate_html_report(results, api_base, model_name, api_type):
+def generate_html_report(results, config):
     """Generates a premium HTML report summary of the benchmark runs."""
     
     # Aggregate statistics
@@ -283,6 +280,7 @@ def generate_html_report(results, api_base, model_name, api_type):
         badge_class = 'badge-success' if run['passed'] else 'badge-error'
         status_text = 'PASS' if run['passed'] else 'FAIL'
         test_output_class = 'test-output-pass' if run['passed'] else 'test-output-fail'
+        speed_label = f"{run['tps']:.1f} tok/s" + (" (est)" if run.get("is_estimated") else "")
         
         run_html = f"""
             <div class="run-accordion" id="run-container-{idx}">
@@ -295,7 +293,7 @@ def generate_html_report(results, api_base, model_name, api_type):
                         <span style="color: var(--text-muted); font-size: 0.85rem;">Run #{run['run_index']}</span>
                     </div>
                     <div class="run-meta-group">
-                        <span>Speed: <strong>{run['tps']:.1f} tok/s</strong></span>
+                        <span>Speed: <strong>{speed_label}</strong></span>
                         <span>TTFT: <strong>{run['ttft']:.3f}s</strong></span>
                         <span>Wall Time: <strong>{run['wall_time']:.2f}s</strong></span>
                         <span id="accordion-arrow-{idx}">▼</span>
@@ -324,11 +322,9 @@ def generate_html_report(results, api_base, model_name, api_type):
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>LMS Model Benchmarking Report</title>
-    <!-- Modern typography -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <!-- Chart.js CDN for beautiful graphs -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         :root {{
@@ -336,11 +332,8 @@ def generate_html_report(results, api_base, model_name, api_type):
             --bg-secondary: #161f30;
             --bg-tertiary: #1f2d44;
             --accent: #3b82f6;
-            --accent-gradient: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
             --accent-success: #10b981;
-            --accent-success-gradient: linear-gradient(135deg, #10b981 0%, #047857 100%);
             --accent-error: #ef4444;
-            --accent-error-gradient: linear-gradient(135deg, #ef4444 0%, #b91c1c 100%);
             --text-main: #f3f4f6;
             --text-muted: #9ca3af;
             --border-color: rgba(255, 255, 255, 0.08);
@@ -366,7 +359,6 @@ def generate_html_report(results, api_base, model_name, api_type):
             margin: 0 auto;
         }}
 
-        /* Header design */
         header {{
             background: linear-gradient(135deg, rgba(22, 31, 48, 0.8) 0%, rgba(11, 15, 25, 0.8) 100%);
             border: 1px solid var(--border-color);
@@ -379,18 +371,6 @@ def generate_html_report(results, api_base, model_name, api_type):
             overflow: hidden;
         }}
 
-        header::before {{
-            content: '';
-            position: absolute;
-            top: -50%;
-            right: -20%;
-            width: 400px;
-            height: 400px;
-            background: radial-gradient(circle, rgba(59, 130, 246, 0.15) 0%, rgba(0,0,0,0) 70%);
-            border-radius: 50%;
-            z-index: 0;
-        }}
-
         h1 {{
             font-size: 2.5rem;
             font-weight: 800;
@@ -398,27 +378,25 @@ def generate_html_report(results, api_base, model_name, api_type):
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
             margin-bottom: 0.5rem;
-            position: relative;
-            z-index: 1;
         }}
 
-        .meta-grid {{
+        .config-grid {{
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
             gap: 1rem;
             margin-top: 1.5rem;
-            position: relative;
-            z-index: 1;
+            border-top: 1px solid var(--border-color);
+            padding-top: 1.5rem;
         }}
 
-        .meta-item {{
-            background: rgba(255, 255, 255, 0.03);
+        .config-item {{
+            background: rgba(255, 255, 255, 0.02);
             border: 1px solid var(--border-color);
             border-radius: 10px;
             padding: 0.8rem 1.2rem;
         }}
 
-        .meta-label {{
+        .config-label {{
             font-size: 0.75rem;
             text-transform: uppercase;
             letter-spacing: 0.05em;
@@ -426,13 +404,12 @@ def generate_html_report(results, api_base, model_name, api_type):
             margin-bottom: 0.2rem;
         }}
 
-        .meta-value {{
+        .config-value {{
             font-weight: 600;
-            font-size: 1rem;
+            font-size: 0.95rem;
             font-family: 'JetBrains Mono', monospace;
         }}
 
-        /* Metrics grid */
         .metrics-grid {{
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -446,13 +423,6 @@ def generate_html_report(results, api_base, model_name, api_type):
             border-radius: 16px;
             padding: 1.8rem;
             box-shadow: var(--card-shadow);
-            transition: transform 0.3s ease, box-shadow 0.3s ease;
-        }}
-
-        .card:hover {{
-            transform: translateY(-4px);
-            box-shadow: 0 12px 40px 0 rgba(59, 130, 246, 0.15);
-            border-color: rgba(59, 130, 246, 0.3);
         }}
 
         .metric-title {{
@@ -474,15 +444,9 @@ def generate_html_report(results, api_base, model_name, api_type):
             color: var(--text-muted);
         }}
 
-        .metric-pass {{
-            color: var(--accent-success);
-        }}
+        .metric-pass {{ color: var(--accent-success); }}
+        .metric-tps {{ color: var(--accent); }}
 
-        .metric-tps {{
-            color: var(--accent);
-        }}
-
-        /* Visual Charts section */
         .chart-section {{
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
@@ -503,10 +467,8 @@ def generate_html_report(results, api_base, model_name, api_type):
             font-size: 1rem;
             font-weight: 600;
             margin-bottom: 1rem;
-            color: var(--text-main);
         }}
 
-        /* Table styling */
         .table-section {{
             background: var(--bg-secondary);
             border: 1px solid var(--border-color);
@@ -548,14 +510,6 @@ def generate_html_report(results, api_base, model_name, api_type):
             font-size: 0.95rem;
         }}
 
-        tr:last-child td {{
-            border-bottom: none;
-        }}
-
-        tr:hover td {{
-            background: rgba(255, 255, 255, 0.015);
-        }}
-
         .badge {{
             padding: 0.25rem 0.6rem;
             border-radius: 6px;
@@ -576,13 +530,6 @@ def generate_html_report(results, api_base, model_name, api_type):
             border: 1px solid rgba(239, 68, 68, 0.3);
         }}
 
-        /* Expandable Accordion for detailed runs */
-        .runs-section {{
-            display: flex;
-            flex-col: column;
-            gap: 1rem;
-        }}
-
         .run-accordion {{
             background: var(--bg-secondary);
             border: 1px solid var(--border-color);
@@ -600,12 +547,9 @@ def generate_html_report(results, api_base, model_name, api_type):
             justify-content: space-between;
             align-items: center;
             user-select: none;
-            transition: background 0.2s;
         }}
 
-        .run-header:hover {{
-            background: rgba(255, 255, 255, 0.04);
-        }}
+        .run-header:hover {{ background: rgba(255, 255, 255, 0.04); }}
 
         .run-title-group {{
             display: flex;
@@ -628,15 +572,11 @@ def generate_html_report(results, api_base, model_name, api_type):
             background: rgba(11, 15, 25, 0.4);
         }}
 
-        .code-container {{
-            margin-top: 1rem;
-        }}
-
+        .code-container {{ margin-top: 1rem; }}
         .code-title {{
             font-size: 0.85rem;
             color: var(--text-muted);
             margin-bottom: 0.4rem;
-            font-weight: 500;
         }}
 
         pre {{
@@ -650,13 +590,8 @@ def generate_html_report(results, api_base, model_name, api_type):
             color: #e5e7eb;
         }}
 
-        .test-output-pass {{
-            border-left: 4px solid var(--accent-success);
-        }}
-
-        .test-output-fail {{
-            border-left: 4px solid var(--accent-error);
-        }}
+        .test-output-pass {{ border-left: 4px solid var(--accent-success); }}
+        .test-output-fail {{ border-left: 4px solid var(--accent-error); }}
     </style>
 </head>
 <body>
@@ -664,27 +599,59 @@ def generate_html_report(results, api_base, model_name, api_type):
         <header>
             <h1>LMS Model Benchmarking</h1>
             <p style="color: var(--text-muted);">Evaluation report containing latency, throughput, and code-generation correctiveness.</p>
-            <div class="meta-grid">
-                <div class="meta-item">
-                    <div class="meta-label">Model Identifier</div>
-                    <div class="meta-value" style="color: var(--accent);">{model_name}</div>
+            
+            <div class="config-grid">
+                <div class="config-item">
+                    <div class="config-label">Model Name</div>
+                    <div class="config-value" style="color: var(--accent);">{config.get('model')}</div>
                 </div>
-                <div class="meta-item">
-                    <div class="meta-label">API Endpoint</div>
-                    <div class="meta-value">{api_base}</div>
+                <div class="config-item">
+                    <div class="config-label">Quantization</div>
+                    <div class="config-value">{config.get('quant') or 'Unknown'}</div>
                 </div>
-                <div class="meta-item">
-                    <div class="meta-label">Endpoint Protocol</div>
-                    <div class="meta-value" style="text-transform: uppercase;">{api_type}</div>
+                <div class="config-item">
+                    <div class="config-label">Context Length</div>
+                    <div class="config-value">{config.get('context_len') or 'Unknown'}</div>
                 </div>
-                <div class="meta-item">
-                    <div class="meta-label">Generated At</div>
-                    <div class="meta-value">{time.strftime('%Y-%m-%d %H:%M:%S local')}</div>
+                <div class="config-item">
+                    <div class="config-label">MTP Setting</div>
+                    <div class="config-value">{config.get('mtp') or 'Unknown'}</div>
+                </div>
+                <div class="config-item">
+                    <div class="config-label">Draft Size / Model</div>
+                    <div class="config-value">{config.get('draft') or 'None'}</div>
+                </div>
+                <div class="config-item">
+                    <div class="config-label">GPU Layers</div>
+                    <div class="config-value">{config.get('gpu_layers') or 'Unknown'}</div>
+                </div>
+                <div class="config-item">
+                    <div class="config-label">Flash Attention</div>
+                    <div class="config-value">{config.get('flash_attention') or 'Unknown'}</div>
+                </div>
+                <div class="config-item">
+                    <div class="config-label">API protocol</div>
+                    <div class="config-value" style="text-transform: uppercase;">{config.get('api_type')}</div>
+                </div>
+                <div class="config-item">
+                    <div class="config-label">Sampler Settings</div>
+                    <div class="config-value">{config.get('samplers') or 'Default'}</div>
+                </div>
+                <div class="config-item">
+                    <div class="config-label">Seed</div>
+                    <div class="config-value">{config.get('seed') or 'Random'}</div>
+                </div>
+                <div class="config-item">
+                    <div class="config-label">LM Studio Version</div>
+                    <div class="config-value">{config.get('lms_version') or 'Unknown'}</div>
+                </div>
+                <div class="config-item">
+                    <div class="config-label">Generated At</div>
+                    <div class="config-value">{time.strftime('%Y-%m-%d %H:%M:%S local')}</div>
                 </div>
             </div>
         </header>
 
-        <!-- KPI summary -->
         <div class="metrics-grid">
             <div class="card">
                 <div class="metric-title">Unit Test Pass Rate</div>
@@ -708,7 +675,6 @@ def generate_html_report(results, api_base, model_name, api_type):
             </div>
         </div>
 
-        <!-- Visual Charts -->
         <div class="chart-section">
             <div class="chart-container">
                 <div class="chart-title">Pass Rate per Coding Task</div>
@@ -720,7 +686,6 @@ def generate_html_report(results, api_base, model_name, api_type):
             </div>
         </div>
 
-        <!-- Task Summaries -->
         <div class="table-section">
             <div class="section-title">
                 <span style="color: var(--accent);">📊</span> Task-Specific Performance
@@ -742,7 +707,6 @@ def generate_html_report(results, api_base, model_name, api_type):
             </table>
         </div>
 
-        <!-- Detailed Runs -->
         <div class="section-title" style="margin-bottom: 1rem;">
             <span style="color: var(--accent);">🔍</span> Detailed Run Logs
         </div>
@@ -764,10 +728,8 @@ def generate_html_report(results, api_base, model_name, api_type):
             }}
         }}
 
-        // Data injections for Chart.js
         const rawResults = {results_json};
         
-        // Process data for Pass Rate Chart
         const tasksSummary = {{}};
         rawResults.forEach(r => {{
             if (!tasksSummary[r.task]) {{
@@ -780,7 +742,6 @@ def generate_html_report(results, api_base, model_name, api_type):
         const taskLabels = Object.keys(tasksSummary);
         const passRates = taskLabels.map(t => (tasksSummary[t].passed / tasksSummary[t].total) * 100);
 
-        // Render Pass Rate Chart
         const ctxPass = document.getElementById('passRateChart').getContext('2d');
         new Chart(ctxPass, {{
             type: 'bar',
@@ -816,7 +777,6 @@ def generate_html_report(results, api_base, model_name, api_type):
             }}
         }});
 
-        // Process data for Metrics Chart (Run speed + TTFT)
         const runIndices = rawResults.map((r, i) => `#${{i+1}} (${{r.task.substring(0, 10)}}...)`);
         const tpsValues = rawResults.map(r => r.tps);
         const ttftValues = rawResults.map(r => r.ttft);
@@ -893,7 +853,37 @@ def main():
     parser.add_argument("--model", default=MODEL_NAME, help="Model identifier matching endpoint ID")
     parser.add_argument("--api-type", default=API_TYPE, choices=["openai", "anthropic", "lm_studio"], help="Protocol type")
     parser.add_argument("--runs", type=int, default=NUM_RUNS_PER_TASK, help="Number of runs per task")
+    parser.add_argument("--warmup", action="store_true", help="Perform a warmup query before benchmarking")
+    
+    # Model configuration parameters to record (for model comparison)
+    parser.add_argument("--quant", default="Unknown", help="Quantization (e.g. Q4_K_M, Q8_0, IQ4_NL)")
+    parser.add_argument("--context-len", default="Unknown", help="Context window length (e.g. 16k, 32k)")
+    parser.add_argument("--mtp", default="Unknown", help="Multi-token prediction settings (e.g. off, 1, 2, 4)")
+    parser.add_argument("--draft", default="None", help="Draft model used for speculative decoding")
+    parser.add_argument("--gpu-layers", default="Unknown", help="Number of layers offloaded to GPU")
+    parser.add_argument("--flash-attention", default="Unknown", help="Flash Attention setting (e.g. Enabled, Disabled)")
+    parser.add_argument("--samplers", default="Default", help="Custom sampler settings (e.g. temp=0.1, top_p=0.9)")
+    parser.add_argument("--seed", default="Random", help="Random seed used")
+    parser.add_argument("--lms-version", default="Unknown", help="LM Studio application version")
+
     args = parser.parse_args()
+
+    # Consolidate config fields for reporting
+    config_dict = {
+        "api_base": args.api_base,
+        "model": args.model,
+        "api_type": args.api_type,
+        "runs": args.runs,
+        "quant": args.quant,
+        "context_len": args.context_len,
+        "mtp": args.mtp,
+        "draft": args.draft,
+        "gpu_layers": args.gpu_layers,
+        "flash_attention": args.flash_attention,
+        "samplers": args.samplers,
+        "seed": args.seed,
+        "lms_version": args.lms_version
+    }
 
     print("=" * 60)
     print(" LMS MODEL BENCHMARK HARNESS")
@@ -902,16 +892,16 @@ def main():
     print(f"Model Name:    {args.model}")
     print(f"Protocol Type: {args.api_type}")
     print(f"Runs/Task:     {args.runs}")
+    print(f"Quantization:  {args.quant}")
+    print(f"MTP Setting:   {args.mtp}")
     print("=" * 60)
 
-    # Resolve bench directory
     base_dir = os.path.dirname(os.path.abspath(__file__))
     bench_dir = os.path.join(base_dir, "bench")
     if not os.path.exists(bench_dir):
         print(f"Error: bench/ directory not found in {base_dir}")
         sys.exit(1)
 
-    # Discover tasks
     tasks = sorted([d for d in os.listdir(bench_dir) if os.path.isdir(os.path.join(bench_dir, d))])
     if not tasks:
         print("No tasks found in bench/ directory.")
@@ -919,9 +909,17 @@ def main():
 
     print(f"Discovered {len(tasks)} tasks to evaluate.")
     
+    # 0. Warmup run (optional but highly recommended to avoid measuring cache load time)
+    if args.warmup:
+        print("\nPerforming warmup request to wake model...")
+        try:
+            query_model(args.api_base, args.api_type, args.model, "Return 'Warmed' and nothing else.")
+            print("Warmup complete.")
+        except Exception as e:
+            print(f"Warmup failed (skipping): {e}")
+
     results = []
 
-    # Import html module locally for report escaping
     global html
     import html
 
@@ -940,14 +938,14 @@ def main():
             
             # 1. Query LLM
             try:
-                response_text, ttft, wall_time, token_count = query_model(
+                response_text, ttft, wall_time, token_count, is_estimated = query_model(
                     args.api_base, args.api_type, args.model, prompt
                 )
                 tps = token_count / wall_time if wall_time > 0 else 0
-                print(f"  API Response Received: TTFT={ttft:.3f}s, Time={wall_time:.2f}s, Token Count={token_count}, Speed={tps:.1f} tok/s")
+                speed_str = f"{tps:.1f} tok/s" + (" (est)" if is_estimated else "")
+                print(f"  API Response: TTFT={ttft:.3f}s, Time={wall_time:.2f}s, Tokens={token_count}, Speed={speed_str}")
             except Exception as e:
                 print(f"  [ERROR] API Query failed: {e}")
-                # Save failed run status
                 results.append({
                     "task": task,
                     "run_index": run_idx,
@@ -957,26 +955,28 @@ def main():
                     "tps": 0.0,
                     "response_text": "",
                     "extracted_code": "",
-                    "test_output": f"API Request Failed: {e}"
+                    "test_output": f"API Request Failed: {e}",
+                    "is_estimated": False
                 })
                 continue
 
             # 2. Extract code
             extracted_code = extract_python_code(response_text)
             
-            # Save solution.py in the task directory
             solution_file = os.path.join(task_path, "solution.py")
             with open(solution_file, "w", encoding="utf-8") as f:
                 f.write(extracted_code)
 
             # 3. Run unit tests
             print(f"  Executing unit tests via pytest...")
-            passed, test_output = run_task_tests(task_path)
+            passed, test_output = run_task_tests(task_path, timeout_sec=TEST_TIMEOUT)
             
             status_str = "PASS" if passed else "FAIL"
             print(f"  Test Result: {status_str}")
             
-            # Store results
+            # Store results (strip local base paths from outputs to prevent leaks)
+            relative_task_path = os.path.relpath(task_path, base_dir)
+            
             results.append({
                 "task": task,
                 "run_index": run_idx,
@@ -986,7 +986,8 @@ def main():
                 "tps": tps,
                 "response_text": response_text,
                 "extracted_code": extracted_code,
-                "test_output": test_output
+                "test_output": test_output.replace(base_dir, ""),
+                "is_estimated": is_estimated
             })
 
     # Save raw results JSON
@@ -994,7 +995,7 @@ def main():
         json.dump(results, f, indent=2)
 
     # Generate HTML report
-    generate_html_report(results, args.api_base, args.model, args.api_type)
+    generate_html_report(results, config_dict)
     
     print("\n" + "=" * 60)
     print(" BENCHMARK COMPLETE")
@@ -1002,7 +1003,7 @@ def main():
     passed_total = sum(1 for r in results if r["passed"])
     overall_rate = (passed_total / len(results) * 100) if results else 0
     print(f"Overall Pass Rate: {overall_rate:.1f}% ({passed_total}/{len(results)} runs)")
-    print("Generated files:")
+    print("Generated files (git-ignored):")
     print(" - benchmark_results.json (raw logs)")
     print(" - benchmark_report.html   (visual report summary)")
     print("=" * 60)
