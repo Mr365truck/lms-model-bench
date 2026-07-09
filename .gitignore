@@ -1,6 +1,7 @@
 # Staged generated benchmark results & reports
 benchmark_results.json
 benchmark_report.html
+benchmark_history.json
 
 # Sandbox and task-specific solution code
 bench/**/solution.py

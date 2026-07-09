@@ -21,6 +21,7 @@ TEMPERATURE = 0.1
 NUM_RUNS_PER_TASK = 1            # Run each task this many times for averaging
 TIMEOUT = 60                     # Timeout for API requests in seconds
 TEST_TIMEOUT = 10                # Timeout for unit test execution (prevent hangs)
+HISTORY_FILE = "benchmark_history.json"
 # ==============================================================================
 
 class QueryStatus:
@@ -320,8 +321,46 @@ def run_task_tests(task_dir, extracted_code, base_dir, timeout_sec=TEST_TIMEOUT)
             
     return passed, output
 
-def generate_html_report(results, config):
+def append_history_run(results, config, history_path=HISTORY_FILE):
+    """Appends the current benchmark run to a simple JSON history file."""
+    generated_at = time.strftime('%Y-%m-%d %H:%M:%S local')
+    safe_model = re.sub(r'[^A-Za-z0-9_.-]+', '-', str(config.get("model") or "unknown")).strip("-")
+    entry = {
+        "id": f"{time.strftime('%Y%m%d-%H%M%S')}-{safe_model or 'model'}",
+        "generated_at": generated_at,
+        "label": f"{config.get('model') or 'Unknown model'} - {generated_at}",
+        "config": config,
+        "results": results,
+    }
+
+    history = []
+    if os.path.exists(history_path):
+        try:
+            with open(history_path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, list):
+                history = loaded
+        except Exception:
+            history = []
+
+    history.append(entry)
+    with open(history_path, "w", encoding="utf-8") as f:
+        json.dump(history, f, indent=2)
+
+    return history
+
+def generate_html_report(results, config, history_entries=None):
     """Generates a premium HTML report summary of the benchmark runs."""
+    if history_entries is None:
+        generated_at = time.strftime('%Y-%m-%d %H:%M:%S local')
+        history_entries = [{
+            "id": "current",
+            "generated_at": generated_at,
+            "label": f"{config.get('model') or 'Unknown model'} - {generated_at}",
+            "config": config,
+            "results": results,
+        }]
+
     total_runs = len(results)
     passed_runs = sum(1 for r in results if r["passed"])
     pass_rate = (passed_runs / total_runs * 100) if total_runs > 0 else 0
@@ -390,6 +429,13 @@ def generate_html_report(results, config):
         })
 
     results_json = json.dumps(results, indent=2)
+    history_json = json.dumps(history_entries, indent=2).replace("</", "<\\/")
+    history_options = []
+    for idx, entry in enumerate(history_entries):
+        selected = " selected" if idx == len(history_entries) - 1 else ""
+        label = html.escape(entry.get("label") or f"Run {idx + 1}")
+        history_options.append(f'<option value="{idx}"{selected}>{label}</option>')
+    history_options_html = "\n".join(history_options)
 
     task_rows_html = []
     for row in task_rows:
@@ -509,6 +555,40 @@ def generate_html_report(results, config):
             font-family: 'Outfit', sans-serif;
             line-height: 1.6;
             padding: 2rem 1.5rem;
+        }}
+
+        .history-bar {{
+            max-width: 1200px;
+            margin: 0 auto 1rem auto;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            box-shadow: var(--card-shadow);
+        }}
+
+        .history-bar label {{
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            white-space: nowrap;
+        }}
+
+        .history-bar select {{
+            width: 100%;
+            min-width: 0;
+            background: var(--bg-primary);
+            color: var(--text-main);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 0.7rem 0.9rem;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.9rem;
         }}
 
         .container {{
@@ -764,7 +844,14 @@ def generate_html_report(results, config):
     </style>
 </head>
 <body>
-    <div class="container">
+    <div class="history-bar">
+        <label for="history-select">Model Run</label>
+        <select id="history-select" aria-label="Historical benchmark runs">
+            {history_options_html}
+        </select>
+    </div>
+    <div id="history-view" class="container" style="display: none;"></div>
+    <div id="latest-view" class="container">
         <header>
             <h1>LMS Model Benchmarking</h1>
             <p style="color: var(--text-muted);">Evaluation report containing latency, throughput, and code-generation correctiveness.</p>
@@ -905,7 +992,187 @@ def generate_html_report(results, config):
             }}
         }}
 
+        const historyEntries = {history_json};
+        const latestHistoryIndex = historyEntries.length - 1;
         const rawResults = {results_json};
+
+        function escapeHtml(value) {{
+            return String(value ?? '')
+                .replaceAll('&', '&amp;')
+                .replaceAll('<', '&lt;')
+                .replaceAll('>', '&gt;')
+                .replaceAll('"', '&quot;')
+                .replaceAll("'", '&#039;');
+        }}
+
+        function formatNumber(value, digits = 1) {{
+            const n = Number(value || 0);
+            return n.toFixed(digits);
+        }}
+
+        function taskDisplayName(run) {{
+            return run.metadata && run.metadata.name
+                ? run.metadata.name
+                : String(run.task || '').replace("task_", "").replaceAll("_", " ");
+        }}
+
+        function summarizeResults(results) {{
+            const total = results.length;
+            const passed = results.filter(r => r.passed).length;
+            const speedRuns = results.filter(r => Number(r.decode_tps || 0) > 0);
+            const avg = (field, fallback) => {{
+                if (!speedRuns.length) return 0;
+                return speedRuns.reduce((sum, r) => sum + Number(r[field] ?? r[fallback] ?? 0), 0) / speedRuns.length;
+            }};
+            return {{
+                total,
+                passed,
+                passRate: total ? (passed / total) * 100 : 0,
+                avgDecode: avg('decode_tps'),
+                avgE2E: avg('e2e_tps'),
+                avgVisibleE2E: avg('visible_e2e_tps', 'e2e_tps'),
+                avgTTFT: total ? results.reduce((sum, r) => sum + Number(r.ttft || 0), 0) / total : 0,
+                avgWall: total ? results.reduce((sum, r) => sum + Number(r.wall_time || 0), 0) / total : 0,
+            }};
+        }}
+
+        function renderHistoricalRun(index) {{
+            const latestView = document.getElementById('latest-view');
+            const historyView = document.getElementById('history-view');
+            if (index === latestHistoryIndex) {{
+                latestView.style.display = '';
+                historyView.style.display = 'none';
+                historyView.innerHTML = '';
+                return;
+            }}
+
+            const entry = historyEntries[index];
+            const results = entry.results || [];
+            const config = entry.config || {{}};
+            const summary = summarizeResults(results);
+            const tasks = {{}};
+            results.forEach(r => {{
+                const name = taskDisplayName(r);
+                if (!tasks[name]) tasks[name] = {{ passed: 0, total: 0, decode: 0, e2e: 0, visible: 0, ttft: 0, wall: 0, difficulty: r.metadata?.difficulty || 'Medium', category: r.metadata?.category || 'General' }};
+                const t = tasks[name];
+                t.total++;
+                if (r.passed) t.passed++;
+                t.decode += Number(r.decode_tps || 0);
+                t.e2e += Number(r.e2e_tps || 0);
+                t.visible += Number(r.visible_e2e_tps ?? r.e2e_tps ?? 0);
+                t.ttft += Number(r.ttft || 0);
+                t.wall += Number(r.wall_time || 0);
+            }});
+
+            const taskRows = Object.entries(tasks).map(([name, t]) => {{
+                const passRate = t.total ? (t.passed / t.total) * 100 : 0;
+                const badgeClass = passRate > 50 ? 'badge-success' : 'badge-error';
+                const diffClass = t.difficulty === 'Easy' ? 'badge-success' : (t.difficulty === 'Medium' ? 'badge-warning' : 'badge-danger');
+                return `
+                    <tr>
+                        <td><div style="font-weight: 600;">${{escapeHtml(name)}}</div><div style="font-size: 0.75rem; color: var(--text-muted);">${{escapeHtml(t.category)}}</div></td>
+                        <td><span class="badge ${{diffClass}}">${{escapeHtml(t.difficulty)}}</span></td>
+                        <td>${{t.total}}</td>
+                        <td><span class="badge ${{badgeClass}}">${{formatNumber(passRate, 1)}}%</span></td>
+                        <td style="font-family: 'JetBrains Mono', monospace;">${{formatNumber(t.decode / t.total)}} tok/s</td>
+                        <td style="font-family: 'JetBrains Mono', monospace;">${{formatNumber(t.e2e / t.total)}} tok/s</td>
+                        <td style="font-family: 'JetBrains Mono', monospace; color: var(--text-muted); font-size: 0.85rem;">${{formatNumber(t.visible / t.total)}} tok/s</td>
+                        <td style="font-family: 'JetBrains Mono', monospace;">${{formatNumber(t.ttft / t.total, 3)}}s</td>
+                        <td style="font-family: 'JetBrains Mono', monospace;">${{formatNumber(t.wall / t.total, 2)}}s</td>
+                    </tr>
+                `;
+            }}).join('');
+
+            const detailRows = results.map((run, i) => {{
+                const badgeClass = run.passed ? 'badge-success' : 'badge-error';
+                const statusText = run.passed ? 'PASS' : 'FAIL';
+                const outputClass = run.passed ? 'test-output-pass' : 'test-output-fail';
+                const streamedSuffix = run.streamed_is_estimated || run.is_estimated ? ' (est)' : '';
+                const visibleSuffix = run.visible_is_estimated || run.is_estimated ? ' (est)' : '';
+                return `
+                    <div class="run-accordion">
+                        <div class="run-header" onclick="toggleHistoricalAccordion(${{i}})">
+                            <div class="run-title-group">
+                                <span class="badge ${{badgeClass}}">${{statusText}}</span>
+                                <span style="font-weight: 600;">${{escapeHtml(taskDisplayName(run))}}</span>
+                                <span style="color: var(--text-muted); font-size: 0.85rem;">Run #${{escapeHtml(run.run_index)}}</span>
+                            </div>
+                            <div class="run-meta-group">
+                                <span>Stream Decode: <strong>${{formatNumber(run.decode_tps)}} tok/s${{streamedSuffix}}</strong></span>
+                                <span>Stream E2E: <strong>${{formatNumber(run.e2e_tps)}} tok/s${{streamedSuffix}}</strong></span>
+                                <span>Visible E2E: <strong style="color: var(--text-muted);">${{formatNumber(run.visible_e2e_tps ?? run.e2e_tps)}} tok/s${{visibleSuffix}}</strong></span>
+                                <span>TTFT: <strong>${{formatNumber(run.ttft, 3)}}s</strong></span>
+                                <span>Wall Time: <strong>${{formatNumber(run.wall_time, 2)}}s</strong></span>
+                                <span id="hist-accordion-arrow-${{i}}">▼</span>
+                            </div>
+                        </div>
+                        <div class="run-content" id="hist-run-content-${{i}}">
+                            <div style="display: grid; grid-template-columns: 1fr; gap: 1rem;">
+                                <div class="code-container">
+                                    <div class="code-title">Extracted Python Code (solution.py)</div>
+                                    <pre><code>${{escapeHtml(run.extracted_code)}}</code></pre>
+                                </div>
+                                <div class="code-container">
+                                    <div class="code-title">Pytest Results Output</div>
+                                    <pre class="${{outputClass}}"><code>${{escapeHtml(run.test_output)}}</code></pre>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }}).join('');
+
+            latestView.style.display = 'none';
+            historyView.style.display = '';
+            historyView.innerHTML = `
+                <header>
+                    <h1>LMS Model Benchmarking</h1>
+                    <p style="color: var(--text-muted);">Historical report from ${{escapeHtml(entry.generated_at || '')}}.</p>
+                    <div class="config-grid">
+                        <div class="config-item"><div class="config-label">Model Name</div><div class="config-value" style="color: var(--accent);">${{escapeHtml(config.model || 'Unknown')}}</div></div>
+                        <div class="config-item"><div class="config-label">Quantization</div><div class="config-value">${{escapeHtml(config.quant || 'Unknown')}}</div></div>
+                        <div class="config-item"><div class="config-label">Context Length</div><div class="config-value">${{escapeHtml(config.context_len || 'Unknown')}}</div></div>
+                        <div class="config-item"><div class="config-label">MTP Setting</div><div class="config-value">${{escapeHtml(config.mtp || 'Unknown')}}</div></div>
+                        <div class="config-item"><div class="config-label">Draft Size / Model</div><div class="config-value">${{escapeHtml(config.draft || 'None')}}</div></div>
+                        <div class="config-item"><div class="config-label">API protocol</div><div class="config-value" style="text-transform: uppercase;">${{escapeHtml(config.api_type || '')}}</div></div>
+                        <div class="config-item"><div class="config-label">Generated At</div><div class="config-value">${{escapeHtml(entry.generated_at || '')}}</div></div>
+                    </div>
+                </header>
+                <div class="metrics-grid">
+                    <div class="card"><div class="metric-title">Unit Test Pass Rate</div><div class="metric-value metric-pass">${{formatNumber(summary.passRate, 1)}}%</div><div class="metric-desc">${{summary.passed}} of ${{summary.total}} runs passed</div></div>
+                    <div class="card"><div class="metric-title">Avg Stream Decode</div><div class="metric-value metric-tps">${{formatNumber(summary.avgDecode)}} <span style="font-size: 1.2rem; font-weight: 500;">tok/s</span></div><div class="metric-desc">Total streamed generation rate excluding TTFT</div></div>
+                    <div class="card"><div class="metric-title">Avg Stream E2E</div><div class="metric-value" style="color: #6366f1;">${{formatNumber(summary.avgE2E)}} <span style="font-size: 1.2rem; font-weight: 500;">tok/s</span></div><div class="metric-desc">Total streamed throughput including TTFT</div></div>
+                    <div class="card"><div class="metric-title">Avg Visible E2E</div><div class="metric-value" style="color: #a78bfa;">${{formatNumber(summary.avgVisibleE2E)}} <span style="font-size: 1.2rem; font-weight: 500;">tok/s</span></div><div class="metric-desc">Visible answer throughput including reasoning time</div></div>
+                    <div class="card"><div class="metric-title">Avg Latency (TTFT) / Wall Time</div><div class="metric-value" style="color: #fbbf24;">${{formatNumber(summary.avgTTFT, 3)}}s <span style="font-size: 1.2rem; font-weight: 500; color: var(--text-muted);">/ ${{formatNumber(summary.avgWall, 1)}}s</span></div><div class="metric-desc">TTFT / Total Wall Time average</div></div>
+                </div>
+                <div class="table-section">
+                    <div class="section-title">Task-Specific Performance</div>
+                    <table>
+                        <thead><tr><th>Coding Task</th><th>Difficulty</th><th>Runs</th><th>Pass Rate</th><th>Stream Decode</th><th>Stream E2E</th><th>Visible E2E</th><th>Avg Latency</th><th>Avg Wall Time</th></tr></thead>
+                        <tbody>${{taskRows}}</tbody>
+                    </table>
+                </div>
+                <div class="section-title" style="margin-bottom: 1rem;">Detailed Run Logs</div>
+                <div class="runs-section">${{detailRows}}</div>
+            `;
+        }}
+
+        function toggleHistoricalAccordion(idx) {{
+            const content = document.getElementById('hist-run-content-' + idx);
+            const arrow = document.getElementById('hist-accordion-arrow-' + idx);
+            if (!content) return;
+            if (content.style.display === 'block') {{
+                content.style.display = 'none';
+                if (arrow) arrow.textContent = '▼';
+            }} else {{
+                content.style.display = 'block';
+                if (arrow) arrow.textContent = '▲';
+            }}
+        }}
+
+        document.getElementById('history-select').addEventListener('change', (event) => {{
+            renderHistoricalRun(Number(event.target.value));
+        }});
         
         const tasksSummary = {{}};
         rawResults.forEach(r => {{
@@ -1241,8 +1508,11 @@ def main():
     with open("benchmark_results.json", "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2)
 
+    # Append to simple local history and embed that history in the regenerated report.
+    history_entries = append_history_run(results, config_dict)
+
     # Generate HTML report
-    generate_html_report(results, config_dict)
+    generate_html_report(results, config_dict, history_entries)
     
     print("\n" + "=" * 60)
     print(" BENCHMARK COMPLETE")
@@ -1252,6 +1522,7 @@ def main():
     print(f"Overall Pass Rate: {overall_rate:.1f}% ({passed_total}/{len(results)} runs)")
     print("Generated files (git-ignored):")
     print(" - benchmark_results.json (raw logs)")
+    print(f" - {HISTORY_FILE} (historical runs)")
     print(" - benchmark_report.html   (visual report summary)")
     print("=" * 60)
 

@@ -95,4 +95,5 @@ We include a mock LMS server (`mock_lms.py`) to test the benchmarking runner and
 
 3. **Check Output**:
    - `benchmark_results.json`: Detailed raw JSON records of the run.
+   - `benchmark_history.json`: Append-only local history used by the report run selector.
    - `benchmark_report.html`: Beautiful interactive report dashboard. Open this in your browser to view charts, speeds, and test logs.
