@@ -9,6 +9,7 @@ import shutil
 import tempfile
 import html
 import requests
+import threading
 
 # ==============================================================================
 # CONFIGURATION DEFAULTS
@@ -21,6 +22,70 @@ NUM_RUNS_PER_TASK = 1            # Run each task this many times for averaging
 TIMEOUT = 60                     # Timeout for API requests in seconds
 TEST_TIMEOUT = 10                # Timeout for unit test execution (prevent hangs)
 # ==============================================================================
+
+class QueryStatus:
+    """Shows periodic progress while a streaming model request is in flight."""
+    def __init__(self, label="Waiting for model", interval=1.0):
+        self.label = label
+        self.interval = interval
+        self.start_time = None
+        self.first_token_time = None
+        self.char_count = 0
+        self._stop_event = threading.Event()
+        self._lock = threading.Lock()
+        self._thread = None
+        self._is_tty = sys.stdout.isatty()
+
+    def __enter__(self):
+        self.start_time = time.time()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.stop()
+
+    def record_chunk(self, content):
+        with self._lock:
+            if self.first_token_time is None:
+                self.first_token_time = time.time()
+            self.char_count += len(content)
+
+    def stop(self):
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=self.interval + 0.2)
+        if self._is_tty:
+            sys.stdout.write("\r" + " " * 90 + "\r")
+            sys.stdout.flush()
+
+    def _run(self):
+        last_log = 0
+        while not self._stop_event.is_set():
+            elapsed = time.time() - self.start_time
+            if self._is_tty:
+                self._write_status(elapsed)
+            elif elapsed - last_log >= 10:
+                print(self._status_text(elapsed))
+                last_log = elapsed
+            self._stop_event.wait(self.interval)
+
+    def _write_status(self, elapsed):
+        sys.stdout.write("\r" + self._status_text(elapsed))
+        sys.stdout.flush()
+
+    def _status_text(self, elapsed):
+        with self._lock:
+            first_token_time = self.first_token_time
+            char_count = self.char_count
+
+        if first_token_time is None:
+            phase = "awaiting first token"
+        else:
+            ttft = first_token_time - self.start_time
+            phase = f"streaming response, TTFT {ttft:.1f}s, {char_count} chars"
+
+        return f"  {self.label}: {elapsed:.1f}s elapsed, {phase}"
 
 def extract_python_code(text):
     """Extracts python code blocks from markdown response."""
@@ -37,7 +102,6 @@ def extract_python_code(text):
 
 def parse_openai_stream(response):
     """Parses OpenAI stream and yields chunks of text and token counts if available."""
-    full_text = ""
     ttft = None
     start_time = time.time()
     usage = None
@@ -58,17 +122,16 @@ def parse_openai_stream(response):
                 if choices:
                     delta = choices[0].get("delta", {})
                     content = delta.get("content", "")
-                    if content:
+                    progress_content = content or delta.get("reasoning_content", "")
+                    if progress_content:
                         if ttft is None:
                             ttft = time.time() - start_time
-                        full_text += content
-                        yield content, ttft, usage
+                        yield content, ttft, usage, progress_content
             except Exception:
                 pass
 
 def parse_anthropic_stream(response):
     """Parses Anthropic stream and yields chunks of text and token counts if available."""
-    full_text = ""
     ttft = None
     start_time = time.time()
     usage = None
@@ -90,8 +153,7 @@ def parse_anthropic_stream(response):
                     if text:
                         if ttft is None:
                             ttft = time.time() - start_time
-                        full_text += text
-                        yield text, ttft, usage
+                        yield text, ttft, usage, text
                 elif current_event == "message_delta" or "usage" in chunk:
                     if "usage" in chunk:
                         usage = chunk["usage"]
@@ -143,19 +205,22 @@ def query_model(api_base, api_type, model_name, prompt):
 
     start_time = time.time()
     
-    response = requests.post(url, headers=headers, json=payload, stream=True, timeout=TIMEOUT)
-    response.raise_for_status()
-
     full_text = ""
     ttft = None
     usage = None
 
-    for content, current_ttft, current_usage in stream_parser(response):
-        full_text += content
-        if ttft is None:
-            ttft = current_ttft
-        if current_usage:
-            usage = current_usage
+    with QueryStatus() as status:
+        response = requests.post(url, headers=headers, json=payload, stream=True, timeout=TIMEOUT)
+        response.raise_for_status()
+
+        for content, current_ttft, current_usage, progress_content in stream_parser(response):
+            if content:
+                full_text += content
+            status.record_chunk(progress_content)
+            if ttft is None:
+                ttft = current_ttft
+            if current_usage:
+                usage = current_usage
 
     total_time = time.time() - start_time
     if ttft is None:
