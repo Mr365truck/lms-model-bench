@@ -122,11 +122,12 @@ def parse_openai_stream(response):
                 if choices:
                     delta = choices[0].get("delta", {})
                     content = delta.get("content", "")
-                    progress_content = content or delta.get("reasoning_content", "")
+                    reasoning_content = delta.get("reasoning_content", "")
+                    progress_content = content + reasoning_content
                     if progress_content:
                         if ttft is None:
                             ttft = time.time() - start_time
-                        yield content, ttft, usage, progress_content
+                        yield content, ttft, usage, progress_content, bool(reasoning_content)
             except Exception:
                 pass
 
@@ -153,7 +154,7 @@ def parse_anthropic_stream(response):
                     if text:
                         if ttft is None:
                             ttft = time.time() - start_time
-                        yield text, ttft, usage, text
+                        yield text, ttft, usage, text, False
                 elif current_event == "message_delta" or "usage" in chunk:
                     if "usage" in chunk:
                         usage = chunk["usage"]
@@ -166,7 +167,7 @@ def parse_lm_studio_stream(response):
     yield from parse_openai_stream(response)
 
 def query_model(api_base, api_type, model_name, prompt):
-    """Queries the model and returns (response_text, ttft, total_time, token_count, is_estimated)."""
+    """Queries the model and returns response text plus visible and streamed timing metrics."""
     headers = {"Content-Type": "application/json"}
     
     if api_type == "openai":
@@ -208,15 +209,25 @@ def query_model(api_base, api_type, model_name, prompt):
     full_text = ""
     ttft = None
     usage = None
+    visible_chunk_count = 0
+    streamed_chunk_count = 0
+    streamed_char_count = 0
+    saw_reasoning_content = False
 
     with QueryStatus() as status:
         response = requests.post(url, headers=headers, json=payload, stream=True, timeout=TIMEOUT)
         response.raise_for_status()
 
-        for content, current_ttft, current_usage, progress_content in stream_parser(response):
+        for content, current_ttft, current_usage, progress_content, is_reasoning in stream_parser(response):
             if content:
                 full_text += content
+                visible_chunk_count += 1
+            if progress_content:
+                streamed_chunk_count += 1
+                streamed_char_count += len(progress_content)
             status.record_chunk(progress_content)
+            if is_reasoning:
+                saw_reasoning_content = True
             if ttft is None:
                 ttft = current_ttft
             if current_usage:
@@ -226,16 +237,29 @@ def query_model(api_base, api_type, model_name, prompt):
     if ttft is None:
         ttft = total_time
 
-    token_count = None
+    server_token_count = None
     if usage:
-        token_count = usage.get("completion_tokens") or usage.get("output_tokens")
+        server_token_count = usage.get("completion_tokens") or usage.get("output_tokens")
     
-    is_estimated = False
-    if token_count is None:
-        token_count = max(1, int(len(full_text) / 4))
-        is_estimated = True
+    # Usage from reasoning-capable endpoints often includes hidden reasoning tokens.
+    # Keep visible-answer speed separate from total streamed generation speed.
+    visible_token_count = visible_chunk_count or max(1, int(len(full_text) / 4))
+    visible_is_estimated = True
 
-    return full_text, ttft, total_time, token_count, is_estimated
+    streamed_token_count = server_token_count or streamed_chunk_count or max(1, int(streamed_char_count / 4))
+    streamed_is_estimated = server_token_count is None
+
+    return (
+        full_text,
+        ttft,
+        total_time,
+        visible_token_count,
+        streamed_token_count,
+        server_token_count,
+        visible_is_estimated,
+        streamed_is_estimated,
+        saw_reasoning_content,
+    )
 
 def run_task_tests(task_dir, extracted_code, base_dir, timeout_sec=TEST_TIMEOUT):
     """Executes the test suite inside an isolated temporary directory."""
@@ -305,6 +329,9 @@ def generate_html_report(results, config):
     successful_speed_runs = [r for r in results if r.get("decode_tps") is not None and r["decode_tps"] > 0]
     avg_decode_tps = (sum(r["decode_tps"] for r in successful_speed_runs) / len(successful_speed_runs)) if successful_speed_runs else 0
     avg_e2e_tps = (sum(r["e2e_tps"] for r in successful_speed_runs) / len(successful_speed_runs)) if successful_speed_runs else 0
+    avg_visible_e2e_tps = (
+        sum(r.get("visible_e2e_tps", r["e2e_tps"]) for r in successful_speed_runs) / len(successful_speed_runs)
+    ) if successful_speed_runs else 0
     avg_ttft = (sum(r["ttft"] for r in results) / total_runs) if total_runs > 0 else 0
     avg_wall_time = (sum(r["wall_time"] for r in results) / total_runs) if total_runs > 0 else 0
     
@@ -318,6 +345,7 @@ def generate_html_report(results, config):
                 "passed_count": 0,
                 "decode_tps_sum": 0,
                 "e2e_tps_sum": 0,
+                "visible_e2e_tps_sum": 0,
                 "ttft_sum": 0,
                 "wall_time_sum": 0,
                 "metadata": r.get("metadata", {})
@@ -327,6 +355,7 @@ def generate_html_report(results, config):
             tasks_summary[task]["passed_count"] += 1
         tasks_summary[task]["decode_tps_sum"] += r["decode_tps"]
         tasks_summary[task]["e2e_tps_sum"] += r["e2e_tps"]
+        tasks_summary[task]["visible_e2e_tps_sum"] += r.get("visible_e2e_tps", r["e2e_tps"])
         tasks_summary[task]["ttft_sum"] += r["ttft"]
         tasks_summary[task]["wall_time_sum"] += r["wall_time"]
 
@@ -337,6 +366,7 @@ def generate_html_report(results, config):
         task_pass_rate = (info["passed_count"] / n * 100)
         task_avg_decode_tps = info["decode_tps_sum"] / n
         task_avg_e2e_tps = info["e2e_tps_sum"] / n
+        task_avg_visible_e2e_tps = info["visible_e2e_tps_sum"] / n
         task_avg_ttft = info["ttft_sum"] / n
         task_avg_wall_time = info["wall_time_sum"] / n
         
@@ -354,6 +384,7 @@ def generate_html_report(results, config):
             "passed_count": info["passed_count"],
             "avg_decode_tps": f"{task_avg_decode_tps:.1f}",
             "avg_e2e_tps": f"{task_avg_e2e_tps:.1f}",
+            "avg_visible_e2e_tps": f"{task_avg_visible_e2e_tps:.1f}",
             "avg_ttft": f"{task_avg_ttft:.3f}s",
             "avg_wall_time": f"{task_avg_wall_time:.2f}s"
         })
@@ -380,7 +411,8 @@ def generate_html_report(results, config):
                             </span>
                         </td>
                         <td style="font-family: 'JetBrains Mono', monospace;">{row['avg_decode_tps']} tok/s</td>
-                        <td style="font-family: 'JetBrains Mono', monospace; color: var(--text-muted); font-size: 0.85rem;">{row['avg_e2e_tps']} tok/s</td>
+                        <td style="font-family: 'JetBrains Mono', monospace;">{row['avg_e2e_tps']} tok/s</td>
+                        <td style="font-family: 'JetBrains Mono', monospace; color: var(--text-muted); font-size: 0.85rem;">{row['avg_visible_e2e_tps']} tok/s</td>
                         <td style="font-family: 'JetBrains Mono', monospace;">{row['avg_ttft']}</td>
                         <td style="font-family: 'JetBrains Mono', monospace;">{row['avg_wall_time']}</td>
                     </tr>
@@ -394,9 +426,11 @@ def generate_html_report(results, config):
         status_text = 'PASS' if run['passed'] else 'FAIL'
         test_output_class = 'test-output-pass' if run['passed'] else 'test-output-fail'
         
-        est_suffix = " (est)" if run.get("is_estimated") else ""
-        decode_speed = f"{run['decode_tps']:.1f} tok/s{est_suffix}"
-        e2e_speed = f"{run['e2e_tps']:.1f} tok/s{est_suffix}"
+        streamed_est_suffix = " (est)" if run.get("streamed_is_estimated", run.get("is_estimated")) else ""
+        visible_est_suffix = " (est)" if run.get("visible_is_estimated", run.get("is_estimated")) else ""
+        decode_speed = f"{run['decode_tps']:.1f} tok/s{streamed_est_suffix}"
+        e2e_speed = f"{run['e2e_tps']:.1f} tok/s{streamed_est_suffix}"
+        visible_e2e_speed = f"{run.get('visible_e2e_tps', run['e2e_tps']):.1f} tok/s{visible_est_suffix}"
         
         meta = run.get("metadata", {})
         disp_name = meta.get("name", run['task'].replace("task_", "").replace("_", " ").title())
@@ -412,8 +446,9 @@ def generate_html_report(results, config):
                         <span style="color: var(--text-muted); font-size: 0.85rem;">Run #{run['run_index']}</span>
                     </div>
                     <div class="run-meta-group">
-                        <span>Decode Speed: <strong>{decode_speed}</strong></span>
-                        <span>E2E Speed: <strong style="color: var(--text-muted);">{e2e_speed}</strong></span>
+                        <span>Stream Decode: <strong>{decode_speed}</strong></span>
+                        <span>Stream E2E: <strong>{e2e_speed}</strong></span>
+                        <span>Visible E2E: <strong style="color: var(--text-muted);">{visible_e2e_speed}</strong></span>
                         <span>TTFT: <strong>{run['ttft']:.3f}s</strong></span>
                         <span>Wall Time: <strong>{run['wall_time']:.2f}s</strong></span>
                         <span id="accordion-arrow-{idx}">▼</span>
@@ -793,14 +828,19 @@ def generate_html_report(results, config):
                 <div class="metric-desc">{passed_runs} of {total_runs} runs passed</div>
             </div>
             <div class="card">
-                <div class="metric-title">Avg Decode Speed</div>
+                <div class="metric-title">Avg Stream Decode</div>
                 <div class="metric-value metric-tps">{avg_decode_tps:.1f} <span style="font-size: 1.2rem; font-weight: 500;">tok/s</span></div>
-                <div class="metric-desc">Token generation rate (excluding TTFT)</div>
+                <div class="metric-desc">Total streamed generation rate excluding TTFT</div>
             </div>
             <div class="card">
-                <div class="metric-title">Avg E2E Throughput</div>
+                <div class="metric-title">Avg Stream E2E</div>
                 <div class="metric-value" style="color: #6366f1;">{avg_e2e_tps:.1f} <span style="font-size: 1.2rem; font-weight: 500;">tok/s</span></div>
-                <div class="metric-desc">End-to-End throughput (including TTFT)</div>
+                <div class="metric-desc">Total streamed throughput including TTFT</div>
+            </div>
+            <div class="card">
+                <div class="metric-title">Avg Visible E2E</div>
+                <div class="metric-value" style="color: #a78bfa;">{avg_visible_e2e_tps:.1f} <span style="font-size: 1.2rem; font-weight: 500;">tok/s</span></div>
+                <div class="metric-desc">Visible answer throughput including reasoning time</div>
             </div>
             <div class="card">
                 <div class="metric-title">Avg Latency (TTFT) / Wall Time</div>
@@ -831,8 +871,9 @@ def generate_html_report(results, config):
                         <th>Difficulty</th>
                         <th>Runs</th>
                         <th>Pass Rate</th>
-                        <th>Avg Decode</th>
-                        <th>Avg E2E</th>
+                        <th>Stream Decode</th>
+                        <th>Stream E2E</th>
+                        <th>Visible E2E</th>
                         <th>Avg Latency</th>
                         <th>Avg Wall Time</th>
                     </tr>
@@ -920,6 +961,7 @@ def generate_html_report(results, config):
         }});
         const decodeTpsValues = rawResults.map(r => r.decode_tps);
         const e2eTpsValues = rawResults.map(r => r.e2e_tps);
+        const visibleE2eTpsValues = rawResults.map(r => r.visible_e2e_tps || r.e2e_tps);
         const ttftValues = rawResults.map(r => r.ttft);
 
         const ctxMetrics = document.getElementById('metricsChart').getContext('2d');
@@ -929,7 +971,7 @@ def generate_html_report(results, config):
                 labels: runIndices,
                 datasets: [
                     {{
-                        label: 'Decode Speed (tok/s)',
+                        label: 'Stream Decode (tok/s)',
                         data: decodeTpsValues,
                         borderColor: '#3b82f6',
                         backgroundColor: 'rgba(59, 130, 246, 0.1)',
@@ -938,9 +980,18 @@ def generate_html_report(results, config):
                         yAxisID: 'y'
                     }},
                     {{
-                        label: 'E2E Throughput (tok/s)',
+                        label: 'Stream E2E (tok/s)',
                         data: e2eTpsValues,
                         borderColor: '#6366f1',
+                        backgroundColor: 'transparent',
+                        borderWidth: 2,
+                        tension: 0.3,
+                        yAxisID: 'y'
+                    }},
+                    {{
+                        label: 'Visible E2E (tok/s)',
+                        data: visibleE2eTpsValues,
+                        borderColor: '#a78bfa',
                         backgroundColor: 'transparent',
                         borderWidth: 2,
                         tension: 0.3,
@@ -1093,18 +1144,41 @@ def main():
             
             # 1. Query LLM
             try:
-                response_text, ttft, wall_time, token_count, is_estimated = query_model(
+                (
+                    response_text,
+                    ttft,
+                    wall_time,
+                    visible_token_count,
+                    streamed_token_count,
+                    server_token_count,
+                    visible_is_estimated,
+                    streamed_is_estimated,
+                    saw_reasoning_content,
+                ) = query_model(
                     args.api_base, args.api_type, args.model, prompt
                 )
                 
-                # Split TPS into End-to-End and Pure Decode
-                e2e_tps = token_count / wall_time if wall_time > 0 else 0
+                # Primary speed metrics use all streamed generation, including reasoning chunks.
+                e2e_tps = streamed_token_count / wall_time if wall_time > 0 else 0
                 decode_time = max(wall_time - ttft, 1e-6)
-                decode_tps = token_count / decode_time
+                decode_tps = streamed_token_count / decode_time
+                visible_e2e_tps = visible_token_count / wall_time if wall_time > 0 else 0
                 
-                est_suffix = " (est)" if is_estimated else ""
-                print(f"  API Response: TTFT={ttft:.3f}s, Time={wall_time:.2f}s, Tokens={token_count}")
-                print(f"  Speed: Decode={decode_tps:.1f} tok/s{est_suffix}, E2E={e2e_tps:.1f} tok/s{est_suffix}")
+                streamed_est_suffix = " (est)" if streamed_is_estimated else ""
+                visible_est_suffix = " (est)" if visible_is_estimated else ""
+                server_token_text = f", Server Tokens={server_token_count}" if server_token_count is not None else ""
+                reasoning_text = ", reasoning stream detected" if saw_reasoning_content else ""
+                print(
+                    f"  API Response: TTFT={ttft:.3f}s, Time={wall_time:.2f}s, "
+                    f"Streamed Tokens={streamed_token_count}{streamed_est_suffix}, "
+                    f"Visible Tokens={visible_token_count}{visible_est_suffix}"
+                    f"{server_token_text}{reasoning_text}"
+                )
+                print(
+                    f"  Speed: Stream Decode={decode_tps:.1f} tok/s{streamed_est_suffix}, "
+                    f"Stream E2E={e2e_tps:.1f} tok/s{streamed_est_suffix}, "
+                    f"Visible E2E={visible_e2e_tps:.1f} tok/s{visible_est_suffix}"
+                )
             except Exception as e:
                 print(f"  [ERROR] API Query failed: {e}")
                 results.append({
@@ -1116,10 +1190,17 @@ def main():
                     "wall_time": 0.0,
                     "e2e_tps": 0.0,
                     "decode_tps": 0.0,
+                    "visible_e2e_tps": 0.0,
+                    "visible_token_count": 0,
+                    "streamed_token_count": 0,
+                    "server_token_count": None,
                     "response_text": "",
                     "extracted_code": "",
                     "test_output": f"API Request Failed: {e}",
-                    "is_estimated": False
+                    "is_estimated": False,
+                    "visible_is_estimated": False,
+                    "streamed_is_estimated": False,
+                    "saw_reasoning_content": False
                 })
                 continue
 
@@ -1143,10 +1224,17 @@ def main():
                 "wall_time": wall_time,
                 "e2e_tps": e2e_tps,
                 "decode_tps": decode_tps,
+                "visible_e2e_tps": visible_e2e_tps,
+                "visible_token_count": visible_token_count,
+                "streamed_token_count": streamed_token_count,
+                "server_token_count": server_token_count,
                 "response_text": response_text,
                 "extracted_code": extracted_code,
                 "test_output": test_output.replace(base_dir, ""),
-                "is_estimated": is_estimated
+                "is_estimated": streamed_is_estimated,
+                "visible_is_estimated": visible_is_estimated,
+                "streamed_is_estimated": streamed_is_estimated,
+                "saw_reasoning_content": saw_reasoning_content
             })
 
     # Save raw results JSON
