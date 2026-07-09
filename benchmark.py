@@ -22,6 +22,7 @@ NUM_RUNS_PER_TASK = 1            # Run each task this many times for averaging
 TIMEOUT = 60                     # Timeout for API requests in seconds
 TEST_TIMEOUT = 10                # Timeout for unit test execution (prevent hangs)
 HISTORY_FILE = "benchmark_history.json"
+DIFFICULTY_ORDER = {"Easy": 1, "Medium": 2, "Hard": 3}
 # ==============================================================================
 
 class QueryStatus:
@@ -100,6 +101,48 @@ def extract_python_code(text):
         return match.group(1)
     # Fallback to entire text
     return text
+
+def load_task_metadata(task_path):
+    metadata_file = os.path.join(task_path, "metadata.json")
+    if not os.path.exists(metadata_file):
+        return {}
+    try:
+        with open(metadata_file, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def normalize_difficulty(value):
+    return str(value or "Medium").strip().title()
+
+def task_matches_difficulty(task_meta, allowed_difficulties=None, max_difficulty="all"):
+    difficulty = normalize_difficulty(task_meta.get("difficulty", "Medium"))
+    if allowed_difficulties:
+        allowed = {normalize_difficulty(item) for item in allowed_difficulties}
+        return difficulty in allowed
+
+    if max_difficulty == "all":
+        return True
+
+    max_label = normalize_difficulty(max_difficulty)
+    return DIFFICULTY_ORDER.get(difficulty, DIFFICULTY_ORDER["Medium"]) <= DIFFICULTY_ORDER[max_label]
+
+def difficulty_filter_label(config):
+    exact = config.get("difficulty") or []
+    if exact:
+        return ", ".join(normalize_difficulty(item) for item in exact)
+    max_difficulty = str(config.get("max_difficulty") or "all")
+    return f"<= {normalize_difficulty(max_difficulty)}" if max_difficulty != "all" else "All"
+
+def difficulty_filter_level(config):
+    exact = config.get("difficulty") or []
+    if exact:
+        max_rank = max(DIFFICULTY_ORDER.get(normalize_difficulty(item), 2) for item in exact)
+        for label, rank in DIFFICULTY_ORDER.items():
+            if rank == max_rank:
+                return label.lower()
+    max_difficulty = str(config.get("max_difficulty") or "all").lower()
+    return "hard" if max_difficulty == "all" else max_difficulty
 
 def parse_openai_stream(response):
     """Parses OpenAI stream and yields chunks of text and token counts if available."""
@@ -325,10 +368,14 @@ def append_history_run(results, config, history_path=HISTORY_FILE):
     """Appends the current benchmark run to a simple JSON history file."""
     generated_at = time.strftime('%Y-%m-%d %H:%M:%S local')
     safe_model = re.sub(r'[^A-Za-z0-9_.-]+', '-', str(config.get("model") or "unknown")).strip("-")
+    difficulty_label = difficulty_filter_label(config)
+    difficulty_level = difficulty_filter_level(config)
     entry = {
         "id": f"{time.strftime('%Y%m%d-%H%M%S')}-{safe_model or 'model'}",
         "generated_at": generated_at,
-        "label": f"{config.get('model') or 'Unknown model'} - {generated_at}",
+        "label": f"{config.get('model') or 'Unknown model'} - {generated_at} - {difficulty_label}",
+        "difficulty_label": difficulty_label,
+        "difficulty_level": difficulty_level,
         "config": config,
         "results": results,
     }
@@ -353,10 +400,14 @@ def generate_html_report(results, config, history_entries=None):
     """Generates a premium HTML report summary of the benchmark runs."""
     if history_entries is None:
         generated_at = time.strftime('%Y-%m-%d %H:%M:%S local')
+        difficulty_label = difficulty_filter_label(config)
+        difficulty_level = difficulty_filter_level(config)
         history_entries = [{
             "id": "current",
             "generated_at": generated_at,
-            "label": f"{config.get('model') or 'Unknown model'} - {generated_at}",
+            "label": f"{config.get('model') or 'Unknown model'} - {generated_at} - {difficulty_label}",
+            "difficulty_label": difficulty_label,
+            "difficulty_level": difficulty_level,
             "config": config,
             "results": results,
         }]
@@ -434,7 +485,8 @@ def generate_html_report(results, config, history_entries=None):
     for idx, entry in enumerate(history_entries):
         selected = " selected" if idx == len(history_entries) - 1 else ""
         label = html.escape(entry.get("label") or f"Run {idx + 1}")
-        history_options.append(f'<option value="{idx}"{selected}>{label}</option>')
+        difficulty_level = html.escape(entry.get("difficulty_level") or difficulty_filter_level(entry.get("config") or {}))
+        history_options.append(f'<option value="{idx}" data-difficulty="{difficulty_level}" class="difficulty-{difficulty_level}"{selected}>{label}</option>')
     history_options_html = "\n".join(history_options)
 
     task_rows_html = []
@@ -590,6 +642,13 @@ def generate_html_report(results, config, history_entries=None):
             font-family: 'JetBrains Mono', monospace;
             font-size: 0.9rem;
         }}
+
+        .history-bar select.difficulty-easy {{ border-color: rgba(16, 185, 129, 0.85); box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.25); }}
+        .history-bar select.difficulty-medium {{ border-color: rgba(251, 191, 36, 0.9); box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.25); }}
+        .history-bar select.difficulty-hard {{ border-color: rgba(239, 68, 68, 0.9); box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.25); }}
+        .history-bar option.difficulty-easy {{ color: #10b981; }}
+        .history-bar option.difficulty-medium {{ color: #fbbf24; }}
+        .history-bar option.difficulty-hard {{ color: #ef4444; }}
 
         .container {{
             max-width: 1200px;
@@ -890,6 +949,10 @@ def generate_html_report(results, config, history_entries=None):
                     <div class="config-value" style="text-transform: uppercase;">{config.get('api_type')}</div>
                 </div>
                 <div class="config-item">
+                    <div class="config-label">Difficulty Filter</div>
+                    <div class="config-value">{difficulty_filter_label(config)}</div>
+                </div>
+                <div class="config-item">
                     <div class="config-label">Sampler Settings</div>
                     <div class="config-value">{config.get('samplers') or 'Default'}</div>
                 </div>
@@ -1039,6 +1102,7 @@ def generate_html_report(results, config, history_entries=None):
         function renderHistoricalRun(index) {{
             const latestView = document.getElementById('latest-view');
             const historyView = document.getElementById('history-view');
+            updateHistoryDifficulty(index);
             if (index === latestHistoryIndex) {{
                 latestView.style.display = '';
                 historyView.style.display = 'none';
@@ -1135,6 +1199,7 @@ def generate_html_report(results, config, history_entries=None):
                         <div class="config-item"><div class="config-label">MTP Setting</div><div class="config-value">${{escapeHtml(config.mtp || 'Unknown')}}</div></div>
                         <div class="config-item"><div class="config-label">Draft Size / Model</div><div class="config-value">${{escapeHtml(config.draft || 'None')}}</div></div>
                         <div class="config-item"><div class="config-label">API protocol</div><div class="config-value" style="text-transform: uppercase;">${{escapeHtml(config.api_type || '')}}</div></div>
+                        <div class="config-item"><div class="config-label">Difficulty Filter</div><div class="config-value">${{escapeHtml((config.difficulty && config.difficulty.length ? config.difficulty.join(', ') : '<= ' + (config.max_difficulty || 'all')))}}</div></div>
                         <div class="config-item"><div class="config-label">Generated At</div><div class="config-value">${{escapeHtml(entry.generated_at || '')}}</div></div>
                     </div>
                 </header>
@@ -1170,9 +1235,32 @@ def generate_html_report(results, config, history_entries=None):
             }}
         }}
 
+        function difficultyLevelForEntry(entry) {{
+            if (entry.difficulty_level) return entry.difficulty_level;
+            const config = entry.config || {{}};
+            if (config.difficulty && config.difficulty.length) {{
+                const ranks = {{ easy: 1, medium: 2, hard: 3 }};
+                return config.difficulty.reduce((maxLevel, item) => {{
+                    const current = String(item || '').toLowerCase();
+                    return (ranks[current] || 2) > (ranks[maxLevel] || 2) ? current : maxLevel;
+                }}, 'easy');
+            }}
+            const maxDifficulty = String(config.max_difficulty || 'all').toLowerCase();
+            return maxDifficulty === 'all' ? 'hard' : maxDifficulty;
+        }}
+
+        function updateHistoryDifficulty(index) {{
+            const select = document.getElementById('history-select');
+            const entry = historyEntries[index] || {{}};
+            const level = difficultyLevelForEntry(entry);
+            select.classList.remove('difficulty-easy', 'difficulty-medium', 'difficulty-hard');
+            select.classList.add(`difficulty-${{level}}`);
+        }}
+
         document.getElementById('history-select').addEventListener('change', (event) => {{
             renderHistoricalRun(Number(event.target.value));
         }});
+        updateHistoryDifficulty(latestHistoryIndex);
         
         const tasksSummary = {{}};
         rawResults.forEach(r => {{
@@ -1322,6 +1410,8 @@ def main():
     parser.add_argument("--api-type", default=API_TYPE, choices=["openai", "anthropic", "lm_studio"], help="Protocol type")
     parser.add_argument("--runs", type=int, default=NUM_RUNS_PER_TASK, help="Number of runs per task")
     parser.add_argument("--warmup", action="store_true", help="Perform a warmup query before benchmarking")
+    parser.add_argument("--max-difficulty", default="all", choices=["easy", "medium", "hard", "all"], help="Run tasks up to this difficulty")
+    parser.add_argument("--difficulty", action="append", choices=["easy", "medium", "hard"], help="Run only this difficulty; can be repeated")
     
     parser.add_argument("--quant", default="Unknown", help="Quantization (e.g. Q4_K_M, Q8_0, IQ4_NL)")
     parser.add_argument("--context-len", default="Unknown", help="Context window length (e.g. 16k, 32k)")
@@ -1340,6 +1430,8 @@ def main():
         "model": args.model,
         "api_type": args.api_type,
         "runs": args.runs,
+        "max_difficulty": args.max_difficulty,
+        "difficulty": args.difficulty or [],
         "quant": args.quant,
         "context_len": args.context_len,
         "mtp": args.mtp,
@@ -1358,6 +1450,8 @@ def main():
     print(f"Model Name:    {args.model}")
     print(f"Protocol Type: {args.api_type}")
     print(f"Runs/Task:     {args.runs}")
+    difficulty_label = ", ".join(args.difficulty) if args.difficulty else f"<= {args.max_difficulty}"
+    print(f"Difficulty:    {difficulty_label}")
     print(f"Quantization:  {args.quant}")
     print(f"MTP Setting:   {args.mtp}")
     print("=" * 60)
@@ -1368,9 +1462,16 @@ def main():
         print(f"Error: bench/ directory not found in {base_dir}")
         sys.exit(1)
 
-    tasks = sorted([d for d in os.listdir(bench_dir) if os.path.isdir(os.path.join(bench_dir, d))])
+    task_entries = []
+    for task in sorted([d for d in os.listdir(bench_dir) if os.path.isdir(os.path.join(bench_dir, d))]):
+        task_path = os.path.join(bench_dir, task)
+        task_meta = load_task_metadata(task_path)
+        if task_matches_difficulty(task_meta, args.difficulty, args.max_difficulty):
+            task_entries.append((task, task_meta))
+
+    tasks = [task for task, _ in task_entries]
     if not tasks:
-        print("No tasks found in bench/ directory.")
+        print("No tasks matched the selected difficulty filter.")
         sys.exit(0)
 
     print(f"Discovered {len(tasks)} tasks to evaluate.")
@@ -1385,10 +1486,9 @@ def main():
 
     results = []
 
-    for task in tasks:
+    for task, task_meta in task_entries:
         task_path = os.path.join(bench_dir, task)
         prompt_file = os.path.join(task_path, "prompt.txt")
-        metadata_file = os.path.join(task_path, "metadata.json")
         
         if not os.path.exists(prompt_file):
             print(f"Skipping task '{task}' - prompt.txt is missing.")
@@ -1396,15 +1496,6 @@ def main():
 
         with open(prompt_file, "r", encoding="utf-8") as f:
             prompt = f.read()
-
-        # Load task metadata
-        task_meta = {}
-        if os.path.exists(metadata_file):
-            try:
-                with open(metadata_file, "r", encoding="utf-8") as f:
-                    task_meta = json.load(f)
-            except Exception:
-                pass
 
         for run_idx in range(1, args.runs + 1):
             print(f"\nEvaluating task '{task}' (Run {run_idx}/{args.runs})...")

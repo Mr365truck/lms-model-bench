@@ -1,0 +1,6 @@
+{
+  "name": "Gradebook Basics",
+  "difficulty": "Easy",
+  "category": "Collections",
+  "description": "Evaluates simple class design, list aggregation, validation, and deterministic selection from a small in-memory gradebook."
+}

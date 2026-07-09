@@ -6,13 +6,15 @@ This benchmarking suite implements the workflow discussed in [ChatGPT Model Benc
 
 ## Features
 - **3 Endpoint Protocols**: Out-of-the-box support for OpenAI, Anthropic, and LM Studio native APIs.
-- **6 Standard Coding Tasks**:
-  1. `task_01_api_integration`: Implement a paginated REST API client with rate-limit retries.
-  2. `task_02_data_refactoring`: Refactor log processing into rolling window metrics.
-  3. `task_03_bugfix_transaction`: Fix atomic transaction commit and rollback behavior.
-  4. `task_04_json_serializer`: Implement custom JSON serialization with circular-reference detection.
-  5. `task_05_concurrency_race`: Implement a thread-safe worker pool with defined stop semantics.
-  6. `task_06_file_backed_analytics`: Compute LMS analytics from bundled JSON and CSV fixture files.
+- **8 Standard Coding Tasks**:
+  1. `task_00_string_utilities`: Implement basic text normalization and word summarization.
+  2. `task_01_api_integration`: Implement a paginated REST API client with rate-limit retries.
+  3. `task_02_data_refactoring`: Refactor log processing into rolling window metrics.
+  4. `task_03_bugfix_transaction`: Fix atomic transaction commit and rollback behavior.
+  5. `task_04_json_serializer`: Implement custom JSON serialization with circular-reference detection.
+  6. `task_05_concurrency_race`: Implement a thread-safe worker pool with defined stop semantics.
+  7. `task_06_file_backed_analytics`: Compute LMS analytics from bundled JSON and CSV fixture files.
+  8. `task_07_gradebook_basics`: Implement a small in-memory gradebook.
 - **Rich Metric Tracking**:
   - **TTFT**: Time to First Token (calculated via streaming response).
   - **Speed**: Output Tokens per Second (TPS).
@@ -49,6 +51,8 @@ python3 benchmark.py --api-base http://localhost:5555 --model qwen/qwen3.6-27b -
 - `--api-type`: Protocol endpoint type (`openai`, `anthropic`, or `lm_studio`).
 - `--runs`: Number of repetitions per task (default: `1`).
 - `--warmup`: Send one warmup request before timed benchmark runs.
+- `--max-difficulty`: Run tasks up to a difficulty level: `easy`, `medium`, `hard`, or `all` (default: `all`).
+- `--difficulty`: Run only one difficulty level; can be repeated, for example `--difficulty easy --difficulty medium`.
 - `--quant`: Quantization label to store in the report (for example `Q4_K_M`, `Q8_0`, `IQ4_NL`).
 - `--context-len`: Context window label to store in the report (for example `16k`, `32k`).
 - `--mtp`: Multi-token prediction setting label.

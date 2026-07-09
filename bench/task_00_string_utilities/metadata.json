@@ -1,0 +1,6 @@
+{
+  "name": "String Utilities",
+  "difficulty": "Easy",
+  "category": "Data Cleaning",
+  "description": "Evaluates basic string normalization, deterministic parsing, counting, and tie-breaking behavior."
+}

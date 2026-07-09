@@ -1,0 +1,18 @@
+Implement two Python functions for simple text cleanup and summarization.
+
+1. `normalize_slug(text: str) -> str`
+   - Convert text to lowercase.
+   - Replace every run of one or more non-alphanumeric characters with a single hyphen.
+   - Strip leading and trailing hyphens.
+   - Return an empty string if no alphanumeric characters remain.
+
+2. `summarize_words(text: str) -> dict`
+   - Treat words as case-insensitive alphabetic runs only (`A-Z` and `a-z`).
+   - Return a dictionary with:
+     - `"word_count"`: total number of words.
+     - `"unique_count"`: number of unique lowercase words.
+     - `"top_word"`: the most frequent lowercase word.
+   - If there is a tie for `"top_word"`, choose the alphabetically earliest word.
+   - If there are no words, return `"top_word": None`.
+
+Please return only the python code inside a ```python ... ``` block.

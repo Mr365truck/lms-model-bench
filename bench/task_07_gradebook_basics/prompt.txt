@@ -1,0 +1,19 @@
+Implement a Python class `Gradebook` for storing student scores.
+
+The class must support:
+1. `__init__(self)`: create an empty gradebook.
+2. `add_score(self, student: str, score: float) -> None`
+   - Add a score for the student.
+   - Raise `ValueError` if `score` is less than 0 or greater than 100.
+3. `average(self, student: str) -> float`
+   - Return the student's average score rounded to 2 decimal places.
+   - Raise `KeyError` if the student has no scores.
+4. `letter_grade(self, student: str) -> str`
+   - Use the student's average score.
+   - Return `"A"` for 90+, `"B"` for 80+, `"C"` for 70+, `"D"` for 60+, otherwise `"F"`.
+5. `top_student(self) -> str`
+   - Return the student with the highest average.
+   - If tied, return the alphabetically earliest student name.
+   - Raise `ValueError` if the gradebook is empty.
+
+Please return only the python code inside a ```python ... ``` block.
