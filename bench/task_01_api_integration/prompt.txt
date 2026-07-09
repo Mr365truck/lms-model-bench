@@ -6,6 +6,7 @@ The class must support:
    - Pass the header `Authorization: Bearer {api_key}`.
    - Handle rate limits (HTTP 429): If a 429 is encountered, parse the `Retry-After` header (if present, it contains the integer seconds to wait; otherwise default to exponential backoff `2 ** attempt` seconds), sleep for that duration, and retry.
    - Raise a custom exception `APIError(status_code: int, message: str)` for other non-200 HTTP statuses.
+   - Do not assume error responses have a `.text` attribute; use a safe fallback message when needed.
    - Return the JSON parsed body.
 3. `fetch_all_records(self, endpoint: str) -> list[dict]`: Automatically paginate through all pages starting from `page = 1`. 
    - Each API page response contains a JSON body of: `{"records": [...], "has_more": true/false}`.
